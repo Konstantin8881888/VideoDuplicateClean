@@ -1,141 +1,349 @@
 import sys
 import os
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton,
-                             QVBoxLayout, QWidget, QLabel, QFileDialog,
-                             QTextEdit, QProgressBar, QHBoxLayout, QTabWidget)
-from PyQt6.QtCore import QThread, pyqtSignal
 import time
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
+    QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
+    QLineEdit, QCheckBox, QMessageBox
+)
+from PyQt6.QtCore import QThread, pyqtSignal
 
+# Импорты наших модулей
 from core.file_scanner import FileScanner
 from core.frame_extractor import FrameExtractor
-from src.core.video_comparator import VideoComparator
+from core.optimized_comparator import OptimizedVideoComparator
 
 
-# Класс для выполнения сканирования в отдельном потоке
-class ScanThread(QThread):
-    progress_signal = pyqtSignal(int)
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(list)
+# =============================================================================
+# КЛАССЫ ДЛЯ МНОГОПОТОЧНОСТИ
+# =============================================================================
 
-    def __init__(self, scanner, frame_extractor, folder_path):
+class OptimizedScanThread(QThread):
+    """Поток для оптимизированного сканирования папки"""
+
+    # Сигналы для обновления UI из потока
+    progress_signal = pyqtSignal(int, str)  # прогресс (проценты, сообщение)
+    result_signal = pyqtSignal(list)  # финальные результаты
+    finished_signal = pyqtSignal()  # завершение работы
+
+    def __init__(self, comparator, folder_path, similarity_threshold=0.7):
         super().__init__()
-        self.scanner = scanner
-        self.frame_extractor = frame_extractor
+        self.comparator = comparator
         self.folder_path = folder_path
+        self.similarity_threshold = similarity_threshold
+        self.scanner = FileScanner()
 
     def run(self):
+        """Основной метод, который выполняется в потоке"""
         try:
-            self.log_signal.emit("Начинаем сканирование папки...")
+            self.progress_signal.emit(0, "Поиск видеофайлов...")
 
-            # Находим видеофайлы
+            # Находим все видеофайлы
             video_files = self.scanner.find_video_files(self.folder_path)
-            self.log_signal.emit(f"Найдено видеофайлов: {len(video_files)}")
 
             if not video_files:
-                self.finished_signal.emit([])
+                self.result_signal.emit([])
                 return
 
-            results = []
-            total_files = len(video_files)
+            self.progress_signal.emit(10, f"Найдено {len(video_files)} видеофайлов")
 
-            for i, file_path in enumerate(video_files):
-                # Обновляем прогресс
-                progress = int((i / total_files) * 100)
-                self.progress_signal.emit(progress)
+            # Запускаем оптимизированный поиск похожих видео
+            similar_pairs = self.comparator.find_similar_videos_optimized(
+                video_files,
+                self.similarity_threshold
+            )
 
-                self.log_signal.emit(f"Обрабатываем: {os.path.basename(file_path)}")
-
-                # Получаем информацию о файле
-                file_info = self.scanner.get_file_info(file_path)
-
-                # Получаем информацию о видео
-                video_info = self.frame_extractor.get_video_info(file_path)
-
-                # Извлекаем кадры (пока только информацию о том, что можем)
-                frames_count = 10  # Мы будем извлекать 10 кадров, но пока не сохраняем их
-
-                result = {
-                    'path': file_path,
-                    'file_info': file_info,
-                    'video_info': video_info,
-                    'frames_count': frames_count
-                }
-                results.append(result)
-
-                # Имитируем обработку для демонстрации
-                time.sleep(0.1)
-
-            self.progress_signal.emit(100)
-            self.finished_signal.emit(results)
+            # Отправляем результаты в основной поток
+            self.result_signal.emit(similar_pairs)
 
         except Exception as e:
-            self.log_signal.emit(f"Ошибка при сканировании: {e}")
+            print(f"Ошибка в потоке сканирования: {e}")
+        finally:
+            self.finished_signal.emit()
 
+
+class CompareThread(QThread):
+    """Поток для сравнения двух конкретных видеофайлов"""
+
+    result_signal = pyqtSignal(dict)
+
+    def __init__(self, comparator, video1_path, video2_path):
+        super().__init__()
+        self.comparator = comparator
+        self.video1_path = video1_path
+        self.video2_path = video2_path
+
+    def run(self):
+        result = self.comparator.compare_videos(self.video1_path, self.video2_path)
+        self.result_signal.emit(result)
+
+
+# =============================================================================
+# ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
+# =============================================================================
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # ... (предыдущий код инициализации)
+        self.setWindowTitle("VideoDuplicate Cleaner")
+        self.setGeometry(100, 100, 900, 700)
 
-        # Добавляем компаратор
-        self.comparator = VideoComparator()
+        # Инициализация компонентов
+        self.scanner = FileScanner()
+        self.frame_extractor = FrameExtractor()
+        self.comparator = OptimizedVideoComparator()  # Используем оптимизированную версию
 
+        # Переменные состояния
+        self.selected_folder = ""
+        self.video1_path = ""
+        self.video2_path = ""
+        self.optimized_scan_thread = None
+        self.compare_thread = None
+
+        # Создаем интерфейс
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Создает весь пользовательский интерфейс"""
         # Создаем вкладки
-        self.setup_tabs()
-
-    def setup_tabs(self):
-        """Создает вкладки для разных функций"""
         self.tabs = QTabWidget()
-
-        # Вкладка сканирования
-        self.scan_tab = self.create_scan_tab()
-        self.tabs.addTab(self.scan_tab, "Сканирование")
-
-        # Вкладка сравнения
-        self.compare_tab = self.create_compare_tab()
-        self.tabs.addTab(self.compare_tab, "Сравнение")
-
         self.setCentralWidget(self.tabs)
 
-    def create_compare_tab(self):
-        """Создает вкладку для сравнения видео"""
+        # Создаем и добавляем вкладки
+        self.scan_tab = self.create_scan_tab()
+        self.compare_tab = self.create_compare_tab()
+
+        self.tabs.addTab(self.scan_tab, "📁 Сканирование папки")
+        self.tabs.addTab(self.compare_tab, "🔍 Сравнение видео")
+
+    def create_scan_tab(self):
+        """Создает вкладку для сканирования папки"""
         widget = QWidget()
         layout = QVBoxLayout()
         widget.setLayout(layout)
 
-        # Кнопки выбора файлов для сравнения
-        compare_layout = QHBoxLayout()
+        # Заголовок
+        title_label = QLabel("Поиск похожих видеофайлов в папке")
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        layout.addWidget(title_label)
 
+        # Выбор папки
+        folder_layout = QHBoxLayout()
+        self.select_button = QPushButton("Выбрать папку для сканирования")
+        self.select_button.clicked.connect(self.select_folder)
+        folder_layout.addWidget(self.select_button)
+
+        self.selected_folder_label = QLabel("Папка не выбрана")
+        folder_layout.addWidget(self.selected_folder_label)
+        layout.addLayout(folder_layout)
+
+        # Настройки сканирования
+        settings_layout = QHBoxLayout()
+
+        settings_layout.addWidget(QLabel("Порог схожести:"))
+        self.similarity_threshold_input = QLineEdit("0.7")
+        self.similarity_threshold_input.setMaximumWidth(50)
+        settings_layout.addWidget(self.similarity_threshold_input)
+
+        settings_layout.addWidget(QLabel("(0.1 - 1.0, где 1.0 = идентичные)"))
+        settings_layout.addStretch()
+        layout.addLayout(settings_layout)
+
+        # Кнопка запуска сканирования
+        self.scan_button = QPushButton("🚀 Начать оптимизированное сканирование")
+        self.scan_button.clicked.connect(self.start_optimized_scan)
+        self.scan_button.setStyleSheet("QPushButton { font-weight: bold; padding: 8px; }")
+        layout.addWidget(self.scan_button)
+
+        # Прогресс-бар
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        # Поле для логов и результатов
+        self.log_text = QTextEdit()
+        self.log_text.setPlaceholderText(
+            "Здесь будут отображаться процесс сканирования и результаты...\n\n"
+            "Оптимизированный алгоритм:\n"
+            "• Сначала ищет точные дубликаты по хэшам\n"
+            "• Фильтрует по метаданным (размер, длительность)\n"
+            "• Только затем делает глубокий анализ кадров"
+        )
+        layout.addWidget(self.log_text)
+
+        # Статусная строка
+        self.status_label = QLabel("Готов к работе")
+        layout.addWidget(self.status_label)
+
+        return widget
+
+    def create_compare_tab(self):
+        """Создает вкладку для сравнения двух видео"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        widget.setLayout(layout)
+
+        # Заголовок
+        title_label = QLabel("Сравнение двух видеофайлов")
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        layout.addWidget(title_label)
+
+        # Выбор первого видео
+        video1_layout = QHBoxLayout()
         self.select_video1_btn = QPushButton("Выбрать первое видео")
         self.select_video1_btn.clicked.connect(lambda: self.select_video_for_comparison(1))
-        compare_layout.addWidget(self.select_video1_btn)
+        video1_layout.addWidget(self.select_video1_btn)
 
+        self.video1_label = QLabel("Видео не выбрано")
+        video1_layout.addWidget(self.video1_label)
+        layout.addLayout(video1_layout)
+
+        # Выбор второго видео
+        video2_layout = QHBoxLayout()
         self.select_video2_btn = QPushButton("Выбрать второе видео")
         self.select_video2_btn.clicked.connect(lambda: self.select_video_for_comparison(2))
-        compare_layout.addWidget(self.select_video2_btn)
+        video2_layout.addWidget(self.select_video2_btn)
 
-        layout.addLayout(compare_layout)
-
-        # Поля для отображения выбранных файлов
-        self.video1_label = QLabel("Первое видео: не выбрано")
-        self.video2_label = QLabel("Второе видео: не выбрано")
-        layout.addWidget(self.video1_label)
-        layout.addWidget(self.video2_label)
+        self.video2_label = QLabel("Видео не выбрано")
+        video2_layout.addWidget(self.video2_label)
+        layout.addLayout(video2_layout)
 
         # Кнопка сравнения
-        self.compare_btn = QPushButton("Сравнить видео")
+        self.compare_btn = QPushButton("🔍 Сравнить выбранные видео")
         self.compare_btn.clicked.connect(self.compare_selected_videos)
         layout.addWidget(self.compare_btn)
 
         # Результаты сравнения
         self.compare_results = QTextEdit()
-        self.compare_results.setPlaceholderText("Здесь будут результаты сравнения...")
+        self.compare_results.setPlaceholderText("Результаты сравнения появятся здесь...")
         layout.addWidget(self.compare_results)
 
-        self.video1_path = ""
-        self.video2_path = ""
-
         return widget
+
+    # =============================================================================
+    # МЕТОДЫ ДЛЯ ВКЛАДКИ СКАНИРОВАНИЯ
+    # =============================================================================
+
+    def select_folder(self):
+        """Выбирает папку для сканирования"""
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
+        if folder:
+            self.selected_folder = folder
+            self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
+            self.log_text.append(f"📁 Выбрана папка: {folder}")
+
+    def start_optimized_scan(self):
+        """Запускает оптимизированное сканирование папки"""
+        if not self.selected_folder:
+            self.show_warning("Сначала выберите папку для сканирования!")
+            return
+
+        # Получаем и проверяем порог схожести
+        try:
+            threshold = float(self.similarity_threshold_input.text())
+            if not (0.1 <= threshold <= 1.0):
+                raise ValueError("Порог должен быть между 0.1 и 1.0")
+        except ValueError as e:
+            self.show_warning(f"Некорректный порог схожести: {e}")
+            return
+
+        # Блокируем UI на время сканирования
+        self.set_scan_ui_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        self.log_text.clear()
+        self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
+        self.log_text.append(f"📁 Папка: {self.selected_folder}")
+        self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
+        self.log_text.append("─" * 50)
+
+        # Запускаем сканирование в отдельном потоке
+        self.optimized_scan_thread = OptimizedScanThread(
+            self.comparator,
+            self.selected_folder,
+            threshold
+        )
+        self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
+        self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
+        self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
+        self.optimized_scan_thread.start()
+
+    def update_optimized_progress(self, value: int, message: str):
+        """Обновляет прогресс сканирования"""
+        self.progress_bar.setValue(value)
+        self.status_label.setText(message)
+        self.log_text.append(f"⚡ {message}")
+
+    def optimized_scan_finished(self, results: list):
+        """Обрабатывает результаты оптимизированного сканирования"""
+        self.log_text.append("\n" + "═" * 50)
+        self.log_text.append("✅ СКАНИРОВАНИЕ ЗАВЕРШЕНО!")
+
+        if not results:
+            self.log_text.append("❌ Похожих видеофайлов не найдено")
+            self.status_label.setText("Похожие видео не найдены")
+            return
+
+        # Группируем результаты для удобного отображения
+        groups = self._group_similar_videos(results)
+
+        self.log_text.append(f"📊 Найдено групп похожих видео: {len(groups)}")
+        self.log_text.append(f"📈 Всего пар: {len(results)}")
+        self.status_label.setText(f"Найдено {len(groups)} групп похожих видео")
+
+        # Показываем группы
+        for i, group in enumerate(groups, 1):
+            self.log_text.append(f"\n🎬 ГРУППА {i} ({len(group)} видео):")
+            for video_path, similarity in group:
+                file_size = os.path.getsize(video_path) / (1024 * 1024)  # в MB
+                self.log_text.append(
+                    f"   📹 {os.path.basename(video_path)} "
+                    f"({file_size:.1f} MB, схожесть: {similarity:.1%})"
+                )
+
+    def scan_thread_finished(self):
+        """Вызывается когда поток сканирования завершил работу"""
+        self.set_scan_ui_enabled(True)
+        self.progress_bar.setVisible(False)
+
+    def _group_similar_videos(self, results: list) -> list:
+        """Группирует похожие видео в логические группы"""
+        groups = []
+        used_videos = set()
+
+        for video1, video2, similarity, _ in results:
+            # Если оба видео уже в группах, пропускаем
+            if video1 in used_videos and video2 in used_videos:
+                continue
+
+            # Ищем существующую группу для одного из видео
+            found_group = None
+            for group in groups:
+                group_videos = [v[0] for v in group]
+                if video1 in group_videos or video2 in group_videos:
+                    found_group = group
+                    break
+
+            # Если группы нет, создаем новую
+            if found_group is None:
+                found_group = []
+                groups.append(found_group)
+
+            # Добавляем видео в группу если их там еще нет
+            if video1 not in used_videos:
+                found_group.append((video1, similarity))
+                used_videos.add(video1)
+
+            if video2 not in used_videos:
+                found_group.append((video2, similarity))
+                used_videos.add(video2)
+
+        return groups
+
+    # =============================================================================
+    # МЕТОДЫ ДЛЯ ВКЛАДКИ СРАВНЕНИЯ
+    # =============================================================================
 
     def select_video_for_comparison(self, video_num: int):
         """Выбирает видеофайл для сравнения"""
@@ -149,15 +357,15 @@ class MainWindow(QMainWindow):
         if file_path:
             if video_num == 1:
                 self.video1_path = file_path
-                self.video1_label.setText(f"Первое видео: {os.path.basename(file_path)}")
+                self.video1_label.setText(f"Выбрано: {os.path.basename(file_path)}")
             else:
                 self.video2_path = file_path
-                self.video2_label.setText(f"Второе видео: {os.path.basename(file_path)}")
+                self.video2_label.setText(f"Выбрано: {os.path.basename(file_path)}")
 
     def compare_selected_videos(self):
-        """Сравнивает выбранные видеофайлы"""
+        """Сравнивает два выбранных видеофайла"""
         if not self.video1_path or not self.video2_path:
-            self.compare_results.append("❌ Ошибка: выберите оба видеофайла!")
+            self.show_warning("Выберите оба видеофайла для сравнения!")
             return
 
         self.compare_results.clear()
@@ -168,8 +376,8 @@ class MainWindow(QMainWindow):
         self.compare_thread.result_signal.connect(self.show_comparison_result)
         self.compare_thread.start()
 
-    def show_comparison_result(self, result):
-        """Показывает результаты сравнения"""
+    def show_comparison_result(self, result: dict):
+        """Показывает результаты сравнения двух видео"""
         self.compare_results.append("\n📊 РЕЗУЛЬТАТЫ СРАВНЕНИЯ:")
         self.compare_results.append(f"🎯 Общая схожесть: {result['similarity']:.2%}")
 
@@ -177,32 +385,60 @@ class MainWindow(QMainWindow):
             self.compare_results.append(f"❌ Ошибка: {result['error']}")
             return
 
-        for i, comparison in enumerate(result['frame_comparisons']):
-            self.compare_results.append(f"\n🔍 Сравнение кадров #{i + 1}:")
+        # Показываем детали по каждому сравнению кадров
+        for i, comparison in enumerate(result['frame_comparisons'], 1):
+            self.compare_results.append(f"\n🔍 Сравнение кадров #{i}:")
             self.compare_results.append(f"   Общая схожесть: {comparison['similarity']:.2%}")
+
+            # Детали по каждому алгоритму
             for algo_name, algo_score in comparison['algorithm_details'].items():
                 if algo_name != 'overall':
                     self.compare_results.append(f"   - {algo_name}: {algo_score:.2%}")
 
+    # =============================================================================
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # =============================================================================
 
-# Добавляем класс для потока сравнения
-class CompareThread(QThread):
-    result_signal = pyqtSignal(dict)
+    def set_scan_ui_enabled(self, enabled: bool):
+        """Включает/выключает элементы UI во время сканирования"""
+        self.scan_button.setEnabled(enabled)
+        self.select_button.setEnabled(enabled)
+        self.similarity_threshold_input.setEnabled(enabled)
 
-    def __init__(self, comparator, video1_path, video2_path):
-        super().__init__()
-        self.comparator = comparator
-        self.video1_path = video1_path
-        self.video2_path = video2_path
+    def show_warning(self, message: str):
+        """Показывает предупреждающее сообщение"""
+        QMessageBox.warning(self, "Внимание", message)
 
-    def run(self):
-        result = self.comparator.compare_videos(self.video1_path, self.video2_path)
-        self.result_signal.emit(result)
+    def closeEvent(self, event):
+        """Обрабатывает закрытие приложения"""
+        # Останавливаем потоки если они работают
+        if self.optimized_scan_thread and self.optimized_scan_thread.isRunning():
+            self.optimized_scan_thread.terminate()
+            self.optimized_scan_thread.wait()
+
+        if self.compare_thread and self.compare_thread.isRunning():
+            self.compare_thread.terminate()
+            self.compare_thread.wait()
+
+        event.accept()
+
+
+# =============================================================================
+# ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
+# =============================================================================
 
 def main():
+    """Основная функция запуска приложения"""
+    # Создаем приложение
     app = QApplication(sys.argv)
+    app.setApplicationName("VideoDuplicate Cleaner")
+    app.setApplicationVersion("1.0")
+
+    # Создаем и показываем главное окно
     window = MainWindow()
     window.show()
+
+    # Запускаем цикл событий
     sys.exit(app.exec())
 
 
