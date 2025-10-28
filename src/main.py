@@ -2,12 +2,13 @@ import sys
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton,
                              QVBoxLayout, QWidget, QLabel, QFileDialog,
-                             QTextEdit, QProgressBar)
+                             QTextEdit, QProgressBar, QHBoxLayout, QTabWidget)
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
 
 from core.file_scanner import FileScanner
 from core.frame_extractor import FrameExtractor
+from src.core.video_comparator import VideoComparator
 
 
 # Класс для выполнения сканирования в отдельном потоке
@@ -74,111 +75,129 @@ class ScanThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 800, 600)
+        # ... (предыдущий код инициализации)
 
-        # Инициализируем компоненты
-        self.scanner = FileScanner()
-        self.frame_extractor = FrameExtractor()
-        self.scan_thread = None
+        # Добавляем компаратор
+        self.comparator = VideoComparator()
 
-        # Создаем центральный виджет
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        # Создаем вкладки
+        self.setup_tabs()
 
-        # Создаем layout
+    def setup_tabs(self):
+        """Создает вкладки для разных функций"""
+        self.tabs = QTabWidget()
+
+        # Вкладка сканирования
+        self.scan_tab = self.create_scan_tab()
+        self.tabs.addTab(self.scan_tab, "Сканирование")
+
+        # Вкладка сравнения
+        self.compare_tab = self.create_compare_tab()
+        self.tabs.addTab(self.compare_tab, "Сравнение")
+
+        self.setCentralWidget(self.tabs)
+
+    def create_compare_tab(self):
+        """Создает вкладку для сравнения видео"""
+        widget = QWidget()
         layout = QVBoxLayout()
-        central_widget.setLayout(layout)
+        widget.setLayout(layout)
 
-        # Добавляем элементы
-        label = QLabel("VideoDuplicate Cleaner - поиск похожих видеофайлов")
-        layout.addWidget(label)
+        # Кнопки выбора файлов для сравнения
+        compare_layout = QHBoxLayout()
 
-        self.select_button = QPushButton("Выбрать папку для сканирования")
-        self.select_button.clicked.connect(self.select_folder)
-        layout.addWidget(self.select_button)
+        self.select_video1_btn = QPushButton("Выбрать первое видео")
+        self.select_video1_btn.clicked.connect(lambda: self.select_video_for_comparison(1))
+        compare_layout.addWidget(self.select_video1_btn)
 
-        self.scan_button = QPushButton("Начать сканирование")
-        self.scan_button.clicked.connect(self.start_scan)
-        layout.addWidget(self.scan_button)
+        self.select_video2_btn = QPushButton("Выбрать второе видео")
+        self.select_video2_btn.clicked.connect(lambda: self.select_video_for_comparison(2))
+        compare_layout.addWidget(self.select_video2_btn)
 
-        # Прогресс-бар
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
+        layout.addLayout(compare_layout)
 
-        self.log_text = QTextEdit()
-        self.log_text.setPlaceholderText("Здесь будут отображаться результаты...")
-        layout.addWidget(self.log_text)
+        # Поля для отображения выбранных файлов
+        self.video1_label = QLabel("Первое видео: не выбрано")
+        self.video2_label = QLabel("Второе видео: не выбрано")
+        layout.addWidget(self.video1_label)
+        layout.addWidget(self.video2_label)
 
-        self.status_label = QLabel("Готов к работе")
-        layout.addWidget(self.status_label)
+        # Кнопка сравнения
+        self.compare_btn = QPushButton("Сравнить видео")
+        self.compare_btn.clicked.connect(self.compare_selected_videos)
+        layout.addWidget(self.compare_btn)
 
-        self.selected_folder = ""
+        # Результаты сравнения
+        self.compare_results = QTextEdit()
+        self.compare_results.setPlaceholderText("Здесь будут результаты сравнения...")
+        layout.addWidget(self.compare_results)
 
-    def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-        if folder:
-            self.selected_folder = folder
-            self.log_text.append(f"Выбрана папка: {folder}")
-            self.status_label.setText(f"Выбрана папка: {os.path.basename(folder)}")
+        self.video1_path = ""
+        self.video2_path = ""
 
-    def start_scan(self):
-        if not self.selected_folder:
-            self.log_text.append("ОШИБКА: Сначала выберите папку!")
+        return widget
+
+    def select_video_for_comparison(self, video_num: int):
+        """Выбирает видеофайл для сравнения"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Выберите видео файл #{video_num}",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv)"
+        )
+
+        if file_path:
+            if video_num == 1:
+                self.video1_path = file_path
+                self.video1_label.setText(f"Первое видео: {os.path.basename(file_path)}")
+            else:
+                self.video2_path = file_path
+                self.video2_label.setText(f"Второе видео: {os.path.basename(file_path)}")
+
+    def compare_selected_videos(self):
+        """Сравнивает выбранные видеофайлы"""
+        if not self.video1_path or not self.video2_path:
+            self.compare_results.append("❌ Ошибка: выберите оба видеофайла!")
             return
 
-        # Блокируем кнопки во время сканирования
-        self.scan_button.setEnabled(False)
-        self.select_button.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.compare_results.clear()
+        self.compare_results.append("🔄 Начинаем сравнение...")
 
-        self.log_text.clear()
-        self.log_text.append("Начинаем сканирование...")
-        self.status_label.setText("Сканирование...")
+        # Запускаем сравнение в отдельном потоке
+        self.compare_thread = CompareThread(self.comparator, self.video1_path, self.video2_path)
+        self.compare_thread.result_signal.connect(self.show_comparison_result)
+        self.compare_thread.start()
 
-        # Создаем и запускаем поток сканирования
-        self.scan_thread = ScanThread(self.scanner, self.frame_extractor, self.selected_folder)
-        self.scan_thread.progress_signal.connect(self.update_progress)
-        self.scan_thread.log_signal.connect(self.update_log)
-        self.scan_thread.finished_signal.connect(self.scan_finished)
-        self.scan_thread.start()
+    def show_comparison_result(self, result):
+        """Показывает результаты сравнения"""
+        self.compare_results.append("\n📊 РЕЗУЛЬТАТЫ СРАВНЕНИЯ:")
+        self.compare_results.append(f"🎯 Общая схожесть: {result['similarity']:.2%}")
 
-    def update_progress(self, value):
-        self.progress_bar.setValue(value)
+        if 'error' in result:
+            self.compare_results.append(f"❌ Ошибка: {result['error']}")
+            return
 
-    def update_log(self, message):
-        self.log_text.append(message)
+        for i, comparison in enumerate(result['frame_comparisons']):
+            self.compare_results.append(f"\n🔍 Сравнение кадров #{i + 1}:")
+            self.compare_results.append(f"   Общая схожесть: {comparison['similarity']:.2%}")
+            for algo_name, algo_score in comparison['algorithm_details'].items():
+                if algo_name != 'overall':
+                    self.compare_results.append(f"   - {algo_name}: {algo_score:.2%}")
 
-    def scan_finished(self, results):
-        # Разблокируем кнопки
-        self.scan_button.setEnabled(True)
-        self.select_button.setEnabled(True)
-        self.progress_bar.setVisible(False)
 
-        self.log_text.append("\n=== СКАНИРОВАНИЕ ЗАВЕРШЕНО ===")
-        self.status_label.setText(f"Обработано файлов: {len(results)}")
+# Добавляем класс для потока сравнения
+class CompareThread(QThread):
+    result_signal = pyqtSignal(dict)
 
-        # Показываем результаты
-        for result in results[:10]:  # Показываем первые 10 результатов
-            path = result['path']
-            file_info = result['file_info']
-            video_info = result['video_info']
+    def __init__(self, comparator, video1_path, video2_path):
+        super().__init__()
+        self.comparator = comparator
+        self.video1_path = video1_path
+        self.video2_path = video2_path
 
-            size_mb = file_info.get('size', 0) / (1024 * 1024)
-            duration = video_info.get('duration', 0)
-            resolution = f"{video_info.get('width', 0)}x{video_info.get('height', 0)}"
-
-            self.log_text.append(f"\n{os.path.basename(path)}")
-            self.log_text.append(f"  Размер: {size_mb:.1f} MB")
-            self.log_text.append(f"  Длительность: {duration:.1f} сек")
-            self.log_text.append(f"  Разрешение: {resolution}")
-            self.log_text.append(f"  Будет извлечено кадров: {result['frames_count']}")
-
-        if len(results) > 10:
-            self.log_text.append(f"\n... и еще {len(results) - 10} файлов")
-
+    def run(self):
+        result = self.comparator.compare_videos(self.video1_path, self.video2_path)
+        self.result_signal.emit(result)
 
 def main():
     app = QApplication(sys.argv)
