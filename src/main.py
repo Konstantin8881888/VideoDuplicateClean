@@ -4,9 +4,9 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QCheckBox, QMessageBox
+    QLineEdit, QMessageBox
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, QUrl
 
 # Импорты наших модулей
 from core.file_scanner import FileScanner
@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self.selected_folder = ""
         self.video1_path = ""
         self.video2_path = ""
+        self.current_groups = []
         self.optimized_scan_thread = None
         self.compare_thread = None
 
@@ -169,7 +170,12 @@ class MainWindow(QMainWindow):
             "• Фильтрует по метаданным (размер, длительность)\n"
             "• Только затем делает глубокий анализ кадров"
         )
+        self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text)
+
+        # Кнопки для групп (будем создавать динамически)
+        self.groups_layout = QVBoxLayout()
+        layout.addLayout(self.groups_layout)
 
         # Статусная строка
         self.status_label = QLabel("Готов к работе")
@@ -216,6 +222,7 @@ class MainWindow(QMainWindow):
         # Результаты сравнения
         self.compare_results = QTextEdit()
         self.compare_results.setPlaceholderText("Результаты сравнения появятся здесь...")
+        self.compare_results.setReadOnly(True)
         layout.addWidget(self.compare_results)
 
         return widget
@@ -251,6 +258,9 @@ class MainWindow(QMainWindow):
         self.set_scan_ui_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+
+        # Очищаем предыдущие кнопки групп
+        self.clear_group_buttons()
 
         self.log_text.clear()
         self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
@@ -292,15 +302,93 @@ class MainWindow(QMainWindow):
         self.log_text.append(f"📈 Всего пар: {len(results)}")
         self.status_label.setText(f"Найдено {len(groups)} групп похожих видео")
 
-        # Показываем группы
+        # Сохраняем группы для последующего использования
+        self.current_groups = groups
+
+        # Показываем группы с вычислением средней схожести
         for i, group in enumerate(groups, 1):
-            self.log_text.append(f"\n🎬 ГРУППА {i} ({len(group)} видео):")
+            # Вычисляем среднюю схожесть для группы
+            total_similarity = 0
+            for video_path, similarity in group:
+                total_similarity += similarity
+            avg_similarity = total_similarity / len(group) if group else 0
+
+            self.log_text.append(f"\n🎬 ГРУППА {i} ({len(group)} видео, средняя схожесть: {avg_similarity:.1%}):")
+
             for video_path, similarity in group:
                 file_size = os.path.getsize(video_path) / (1024 * 1024)  # в MB
                 self.log_text.append(
-                    f"   📹 {os.path.basename(video_path)} "
-                    f"({file_size:.1f} MB, схожесть: {similarity:.1%})"
-                )
+                    f"   📹 {os.path.basename(video_path)} ({file_size:.1f} MB, схожесть: {similarity:.1%})")
+
+        # Создаем кнопки для сравнения групп с указанием средней схожести
+        self.create_group_buttons(groups)
+
+    def create_group_buttons(self, groups):
+        """Создает кнопки для сравнения групп с указанием процента схожести"""
+        for i, group in enumerate(groups, 1):
+            # Вычисляем среднюю схожесть для группы
+            total_similarity = 0
+            for video_path, similarity in group:
+                total_similarity += similarity
+            avg_similarity = total_similarity / len(group) if group else 0
+
+            compare_btn = QPushButton(f"🔍 Сравнить группу {i} (схожесть: {avg_similarity:.1%})")
+            compare_btn.clicked.connect(lambda checked, idx=i - 1: self.open_group_comparison(idx))
+            self.groups_layout.addWidget(compare_btn)
+
+    def clear_group_buttons(self):
+        """Очищает кнопки групп"""
+        # Удаляем все кнопки из layout
+        for i in reversed(range(self.groups_layout.count())):
+            widget = self.groups_layout.itemAt(i).widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def open_group_comparison(self, group_index):
+        """Открывает сравнение для выбранной группы"""
+        if 0 <= group_index < len(self.current_groups):
+            group = self.current_groups[group_index]
+            video_paths = [video_path for video_path, similarity in group]
+
+            if len(video_paths) >= 2:
+                self.open_comparison_dialog(video_paths)
+            else:
+                self.show_warning("В группе должно быть как минимум 2 видео для сравнения")
+        else:
+            self.show_warning("Группа не найдена")
+
+    def open_comparison_dialog(self, video_paths):
+        """Открывает диалог для side-by-side сравнения видео"""
+        if len(video_paths) < 2:
+            self.show_warning("Для сравнения нужно как минимум 2 видеофайла!")
+            return
+
+        try:
+            # Пробуем импортировать и открыть диалог сравнения
+            from src.gui.comparison_dialog import ComparisonDialog
+            dialog = ComparisonDialog(video_paths, self)
+            dialog.exec()
+        except ImportError as e:
+            print(f"Ошибка импорта: {e}")
+            self.show_simple_comparison(video_paths)
+        except Exception as e:
+            print(f"Ошибка при открытии диалога: {e}")
+            self.show_simple_comparison(video_paths)
+
+    def show_simple_comparison(self, video_paths):
+        """Показывает упрощенное сравнение если основной диалог не работает"""
+        info = "Side-by-Side сравнение\n\n"
+        info += "Сравниваемые файлы:\n"
+        for i, path in enumerate(video_paths[:2]):  # Берем только первые 2
+            if os.path.exists(path):
+                size = os.path.getsize(path) / (1024 * 1024)
+                info += f"\n{i + 1}. {os.path.basename(path)}\n"
+                info += f"   Размер: {size:.2f} MB\n"
+                info += f"   Путь: {path}\n"
+            else:
+                info += f"\n{i + 1}. ФАЙЛ НЕ НАЙДЕН: {path}\n"
+
+        self.log_text.append(f"\n🔍 СРАВНЕНИЕ ГРУППЫ:\n{info}")
 
     def scan_thread_finished(self):
         """Вызывается когда поток сканирования завершил работу"""
@@ -408,6 +496,10 @@ class MainWindow(QMainWindow):
     def show_warning(self, message: str):
         """Показывает предупреждающее сообщение"""
         QMessageBox.warning(self, "Внимание", message)
+
+    def refresh_file_list(self):
+        """Обновляет список файлов (например, после удаления)"""
+        self.log_text.append("\n🔄 Список файлов обновлен")
 
     def closeEvent(self, event):
         """Обрабатывает закрытие приложения"""
