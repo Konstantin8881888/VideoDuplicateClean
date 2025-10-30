@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl
 
 # Импорты наших модулей
-from core.file_scanner import FileScanner
-from core.frame_extractor import FrameExtractor
-from core.optimized_comparator import OptimizedVideoComparator
+from src.core.file_scanner import FileScanner
+from src.core.frame_extractor import FrameExtractor
+from src.core.optimized_comparator import OptimizedVideoComparator
 
 
 # =============================================================================

@@ -7,9 +7,9 @@ import os
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, os.path.dirname(__file__))
 
-from core.file_scanner import FileScanner
-from core.frame_extractor import FrameExtractor
-from core.video_comparator import VideoComparator
+from src.core.file_scanner import FileScanner
+from src.core.frame_extractor import FrameExtractor
+from src.core.video_comparator import VideoComparator
 
 
 def main():

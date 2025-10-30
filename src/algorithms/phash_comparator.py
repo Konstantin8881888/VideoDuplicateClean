@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from .base_comparator import BaseComparator
+from src.algorithms.base_comparator import BaseComparator
 
 
 class PHashComparator(BaseComparator):

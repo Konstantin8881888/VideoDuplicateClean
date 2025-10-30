@@ -1,8 +1,8 @@
 from typing import List, Dict
 import numpy as np
-from .base_comparator import BaseComparator
-from .histogram_comparator import HistogramComparator
-from .phash_comparator import PHashComparator
+from src.algorithms.base_comparator import BaseComparator
+from src.algorithms.histogram_comparator import HistogramComparator
+from src.algorithms.phash_comparator import PHashComparator
 
 
 class ComparisonManager:
