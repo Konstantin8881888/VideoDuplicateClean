@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QMessageBox
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl
+from src.config import Config
 
 # Импорты наших модулей
 from src.core.file_scanner import FileScanner
@@ -26,11 +27,11 @@ class OptimizedScanThread(QThread):
     result_signal = pyqtSignal(list)  # финальные результаты
     finished_signal = pyqtSignal()  # завершение работы
 
-    def __init__(self, comparator, folder_path, similarity_threshold=0.7):
+    def __init__(self, comparator, folder_path, similarity_threshold=None):
         super().__init__()
         self.comparator = comparator
         self.folder_path = folder_path
-        self.similarity_threshold = similarity_threshold
+        self.similarity_threshold = similarity_threshold if similarity_threshold is not None else Config.SIMILARITY_THRESHOLD
         self.scanner = FileScanner()
 
     def run(self):
@@ -142,7 +143,7 @@ class MainWindow(QMainWindow):
         settings_layout = QHBoxLayout()
 
         settings_layout.addWidget(QLabel("Порог схожести:"))
-        self.similarity_threshold_input = QLineEdit("0.7")
+        self.similarity_threshold_input = QLineEdit(str(Config.SIMILARITY_THRESHOLD))
         self.similarity_threshold_input.setMaximumWidth(50)
         settings_layout.addWidget(self.similarity_threshold_input)
 
@@ -247,7 +248,8 @@ class MainWindow(QMainWindow):
 
         # Получаем и проверяем порог схожести
         try:
-            threshold = float(self.similarity_threshold_input.text())
+            threshold_text = self.similarity_threshold_input.text()
+            threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
             if not (0.1 <= threshold <= 1.0):
                 raise ValueError("Порог должен быть между 0.1 и 1.0")
         except ValueError as e:
@@ -439,9 +441,8 @@ class MainWindow(QMainWindow):
             self,
             f"Выберите видео файл #{video_num}",
             "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv)"
+            f"Video Files ({' '.join(['*' + fmt for fmt in Config.SUPPORTED_FORMATS])})"  # Используем конфиг
         )
-
         if file_path:
             if video_num == 1:
                 self.video1_path = file_path

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from src.core.file_scanner import FileScanner
 from src.core.frame_extractor import FrameExtractor
 from src.core.video_comparator import VideoComparator
+from src.config import Config
 
 
 def main():
@@ -49,18 +50,38 @@ def main():
             else:
                 print("Один из файлов не найден!")
 
+
         elif choice == '3':
+
             folder = input("Введите путь к папке: ").strip('"\'')
-            threshold = float(input("Порог схожести (0.1-1.0): ") or "0.7")
+
+            threshold_input = input(
+                "Порог схожести (0.1-1.0, по умолчанию " + str(Config.SIMILARITY_THRESHOLD) + "): ") or str(
+                Config.SIMILARITY_THRESHOLD)
+
+            try:
+
+                threshold = float(threshold_input)
+
+                threshold = max(0.1, min(1.0, threshold))
+
+            except:
+
+                threshold = Config.SIMILARITY_THRESHOLD
 
             if os.path.exists(folder):
+
                 videos = scanner.find_video_files(folder)
+
                 similar_pairs = comparator.find_similar_videos(videos, threshold)
 
                 print(f"Найдено похожих пар: {len(similar_pairs)}")
+
                 for video1, video2, similarity, _ in similar_pairs:
                     print(f"  {os.path.basename(video1)} <-> {os.path.basename(video2)}: {similarity:.2%}")
+
             else:
+
                 print("Папка не найдена!")
 
         elif choice.lower() == 'q':

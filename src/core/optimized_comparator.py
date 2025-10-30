@@ -3,6 +3,7 @@ import hashlib
 from typing import List, Dict, Tuple, Optional
 from src.core.frame_extractor import FrameExtractor
 from src.algorithms.comparison_manager import ComparisonManager
+from src.config import Config
 
 
 class OptimizedVideoComparator:
@@ -13,8 +14,8 @@ class OptimizedVideoComparator:
     def __init__(self):
         self.frame_extractor = FrameExtractor()
         self.comparison_manager = ComparisonManager()
-        self.num_frames_to_compare = 3  # Уменьшаем количество кадров для скорости
-        self.similarity_threshold = 0.7
+        self.num_frames_to_compare = Config.OPTIMIZED_COMPARISON_FRAMES  # Уменьшаем количество кадров для скорости
+        self.similarity_threshold = Config.SIMILARITY_THRESHOLD
 
         # Кэши для ускорения повторных операций
         self._frame_cache = {}  # Кэш кадров: video_path -> [frames]

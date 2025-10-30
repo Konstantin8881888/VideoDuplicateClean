@@ -2,13 +2,14 @@ import cv2
 import os
 from typing import List, Optional
 import numpy as np
+from src.config import Config
 
 
 class FrameExtractor:
     def __init__(self):
-        self.supported_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
+        self.supported_formats = Config.SUPPORTED_FORMATS
 
-    def extract_frames(self, video_path: str, num_frames: int = 10) -> List[np.ndarray]:
+    def extract_frames(self, video_path: str, num_frames: int = None) -> List[np.ndarray]:
         """
         Извлекает указанное количество кадров из видео, равномерно распределенных по времени
 
@@ -19,6 +20,8 @@ class FrameExtractor:
         Returns:
             Список кадров в формате numpy arrays
         """
+        if num_frames is None:
+            num_frames = Config.DEFAULT_FRAMES_TO_COMPARE
         frames = []
 
         try:
@@ -58,10 +61,13 @@ class FrameExtractor:
 
         return frames
 
-    def extract_and_save_frames(self, video_path: str, output_dir: str, num_frames: int = 10) -> List[str]:
+    def extract_and_save_frames(self, video_path: str, output_dir: str, num_frames: int = None) -> List[str]:
         """
         Извлекает кадры и сохраняет их в файлы (для отладки)
         """
+        if num_frames is None:
+            num_frames = Config.DEFAULT_FRAMES_TO_COMPARE
+
         frames = self.extract_frames(video_path, num_frames)
         saved_paths = []
 
