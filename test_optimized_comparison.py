@@ -7,8 +7,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_path = os.path.join(current_dir, 'src')
 sys.path.insert(0, src_path)
 
-from core.optimized_comparator import OptimizedVideoComparator
-from core.file_scanner import FileScanner
+from src.core.optimized_comparator import OptimizedVideoComparator
+from src.core.file_scanner import FileScanner
 
 
 def test_optimized_comparison():
@@ -69,7 +69,7 @@ def compare_with_old_version():
     """Сравнивает производительность со старой версией"""
     print("\n🔍 Сравнение производительности")
 
-    from core.video_comparator import VideoComparator
+    from src.core.video_comparator import VideoComparator
 
     folder = input("Введите путь к папке с видео (для теста): ").strip('"\'')
 

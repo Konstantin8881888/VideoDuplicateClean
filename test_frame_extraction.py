@@ -4,7 +4,7 @@ import sys
 # Добавляем src в путь для импорта
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
-from core.frame_extractor import FrameExtractor
+from src.core.frame_extractor import FrameExtractor
 
 
 def get_video_path_from_user():

@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-
 class SimpleComparisonDialog(QDialog):
     """Упрощенный диалог для тестирования интеграции"""
 

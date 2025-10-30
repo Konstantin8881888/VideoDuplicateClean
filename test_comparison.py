@@ -10,6 +10,7 @@ try:
     # Используем абсолютные импорты через пакет src
     from src.core.video_comparator import VideoComparator
     from src.core.file_scanner import FileScanner
+    from src.config import Config  # Добавляем импорт конфигурации
 
     print("✅ Импорты успешны!")
 except ImportError as e:
@@ -20,6 +21,7 @@ except ImportError as e:
     try:
         from core.video_comparator import VideoComparator
         from core.file_scanner import FileScanner
+        from config import Config
 
         print("✅ Импорты успешны (альтернативный способ)!")
     except ImportError as e2:
@@ -95,12 +97,13 @@ def test_multiple_videos():
 
     print(f"📁 Найдено видеофайлов: {len(video_files)}")
 
-    # Запрашиваем порог схожести
+    # Запрашиваем порог схожести с значением по умолчанию из конфига
     try:
-        threshold = float(input("Введите порог схожести (0.1-1.0, по умолчанию 0.7): ") or "0.7")
+        threshold_input = input(f"Введите порог схожести (0.1-1.0, по умолчанию {Config.SIMILARITY_THRESHOLD}): ") or str(Config.SIMILARITY_THRESHOLD)
+        threshold = float(threshold_input)
         threshold = max(0.1, min(1.0, threshold))
     except:
-        threshold = 0.7
+        threshold = Config.SIMILARITY_THRESHOLD
 
     print(f"🎯 Порог схожести: {threshold:.0%}")
 
