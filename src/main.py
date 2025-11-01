@@ -60,6 +60,9 @@ class OptimizedScanThread(QThread):
 
         except Exception as e:
             print(f"Ошибка в потоке сканирования: {e}")
+            import traceback
+            traceback.print_exc()
+            self.result_signal.emit([])
         finally:
             self.finished_signal.emit()
 
@@ -321,28 +324,40 @@ class MainWindow(QMainWindow):
         return widget
 
     def update_deletion_ui(self):
-        """Обновляет UI управления удалением с подсчетом размера"""
-        count = len(self.marked_for_deletion)
+        """Обновляет UI управления удалением БЕЗ рекурсивных вызовов"""
+        try:
+            if not hasattr(self, 'marked_count_label') or not self.marked_count_label:
+                return
 
-        # Подсчитываем общий размер отмеченных файлов
-        total_size = 0
-        for file_path in self.marked_for_deletion:
-            try:
-                total_size += os.path.getsize(file_path)
-            except:
-                pass
+            count = len(self.marked_for_deletion)
 
-        total_size_mb = total_size / (1024 * 1024)
+            # Быстрый подсчет размера без глубокой рекурсии
+            total_size = 0
+            valid_files = []
 
-        self.marked_count_label.setText(f"📊 Отмечено для удаления: {count} файлов")
-        self.total_size_label.setText(f"💾 Общий размер: {total_size_mb:.1f} MB")
-        self.delete_marked_btn.setEnabled(count > 0)
+            for file_path in list(self.marked_for_deletion):  # Используем list для копирования
+                try:
+                    if os.path.exists(file_path):
+                        total_size += os.path.getsize(file_path)
+                        valid_files.append(file_path)
+                except (OSError, Exception):
+                    continue
 
-        # Обновляем текст кнопки в зависимости от количества
-        if count > 0:
-            self.delete_marked_btn.setText(f"🚀 УДАЛИТЬ {count} ФАЙЛОВ")
-        else:
-            self.delete_marked_btn.setText("🚀 УДАЛИТЬ ОТМЕЧЕННЫЕ ФАЙЛЫ")
+            # Обновляем множество
+            self.marked_for_deletion = set(valid_files)
+            count = len(self.marked_for_deletion)
+            total_size_mb = total_size / (1024 * 1024) if total_size > 0 else 0
+
+            # Безопасное обновление UI
+            self.marked_count_label.setText(f"📊 Отмечено: {count} файлов")
+            self.total_size_label.setText(f"💾 Размер: {total_size_mb:.1f} MB")
+
+            if hasattr(self, 'delete_marked_btn'):
+                self.delete_marked_btn.setEnabled(count > 0)
+                self.delete_marked_btn.setText(f"🗑️ УДАЛИТЬ ({count})" if count > 0 else "🗑️ УДАЛИТЬ")
+
+        except Exception as e:
+            print(f"Ошибка при обновлении UI удаления: {e}")
 
     def clear_all_marks(self):
         """Очищает все отметки удаления"""
@@ -456,18 +471,54 @@ class MainWindow(QMainWindow):
         self.create_pair_buttons(results)
 
     def create_pair_buttons(self, pairs: list):
-        """Создает понятные виджеты для КАЖДОЙ пары с четкой индикацией удаления"""
-        # Очищаем предыдущие кнопки
-        self.clear_pair_buttons()
-        self.pair_widgets.clear()
-        self.marked_for_deletion.clear()
-        self.update_deletion_ui()
+        """Создает виджеты для пар с защитой от переполнения"""
+        try:
+            print(f"DEBUG: create_pair_buttons начат, пар: {len(pairs)}")
 
-        for i, (video1, video2, similarity, details) in enumerate(pairs, 1):
+            # Проверяем, что методы существуют
+            if not hasattr(self, 'create_file_widget'):
+                print("ОШИБКА: метод create_file_widget не найден!")
+                return
+
+            # Очищаем предыдущие кнопки ПЕРЕД любыми другими операциями
+            self.clear_pair_buttons()
+            self.pair_widgets.clear()
+
+            # Сбрасываем marked_for_deletion ПЕРЕД созданием новых виджетов
+            self.marked_for_deletion.clear()
+
+            # Ограничиваем количество одновременно отображаемых пар для тестирования
+            display_pairs = pairs  # Убрал ограничение, используем все пары
+
+            for i, (video1, video2, similarity, details) in enumerate(display_pairs, 1):
+                # Проверяем существование файлов перед созданием виджетов
+                if not os.path.exists(video1) or not os.path.exists(video2):
+                    continue
+
+                self.create_single_pair_widget(i, video1, video2, similarity, details)
+
+            # Добавляем растягивающийся элемент
+            self.pairs_layout.addStretch()
+
+            # Обновляем UI удаления ПОСЛЕ создания всех виджетов
+            self.update_deletion_ui()
+
+            print(f"DEBUG: create_pair_buttons завершен, создано пар: {len(display_pairs)}")
+
+        except Exception as e:
+            print(f"Критическая ошибка в create_pair_buttons: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def create_single_pair_widget(self, index, video1, video2, similarity, details):
+        """Создает виджет для одной пары (вынесено для упрощения)"""
+        try:
             file1 = os.path.basename(video1)
             file2 = os.path.basename(video2)
-            size1 = os.path.getsize(video1) / (1024 * 1024)
-            size2 = os.path.getsize(video2) / (1024 * 1024)
+
+            # Получаем размеры файлов
+            size1 = os.path.getsize(video1) / (1024 * 1024) if os.path.exists(video1) else 0
+            size2 = os.path.getsize(video2) / (1024 * 1024) if os.path.exists(video2) else 0
 
             # Создаем основной виджет пары
             pair_widget = QWidget()
@@ -483,18 +534,11 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-            # Добавляем tooltip для всей пары
-            pair_tooltip = f"Пара {i}: {similarity:.1%} схожести\n{file1}\n{file2}"
-            pair_widget.setToolTip(pair_tooltip)
-
             # Верхняя строка: заголовок пары
             header_layout = QHBoxLayout()
-
-            pair_title = QLabel(f"🎯 Пара {i}: {similarity:.1%} схожести")
+            pair_title = QLabel(f"🎯 Пара {index}: {similarity:.1%} схожести")
             pair_title.setStyleSheet("font-weight: bold; font-size: 10pt; color: #2c3e50;")
-            pair_title.setToolTip(pair_tooltip)
             header_layout.addWidget(pair_title)
-
             header_layout.addStretch()
 
             # Кнопка сравнения
@@ -514,16 +558,14 @@ class MainWindow(QMainWindow):
                 }
             """)
             compare_btn.setMaximumWidth(100)
-            compare_btn.setToolTip(f"Открыть side-by-side сравнение\n{file1}\nи\n{file2}")
             header_layout.addWidget(compare_btn)
-
             pair_layout.addLayout(header_layout)
 
             # Нижняя строка: файлы с чекбоксами
             files_layout = QHBoxLayout()
 
-            # Файл 1
-            file1_widget = self.create_file_widget(video1, file1, size1, 0)
+            # Файл 1 - ВЫЗОВ БЕЗ INDEX
+            file1_widget = self.create_file_widget(video1, file1, size1)
             files_layout.addWidget(file1_widget)
 
             # Разделитель
@@ -531,98 +573,104 @@ class MainWindow(QMainWindow):
             separator.setStyleSheet("font-size: 14pt; margin: 0 5px;")
             separator.setAlignment(Qt.AlignmentFlag.AlignCenter)
             separator.setMaximumWidth(30)
-            separator.setToolTip(f"Схожесть: {similarity:.1%}")
             files_layout.addWidget(separator)
 
-            # Файл 2
-            file2_widget = self.create_file_widget(video2, file2, size2, 1)
+            # Файл 2 - ВЫЗОВ БЕЗ INDEX
+            file2_widget = self.create_file_widget(video2, file2, size2)
             files_layout.addWidget(file2_widget)
 
             pair_layout.addLayout(files_layout)
-
             self.pairs_layout.addWidget(pair_widget)
 
-        # Добавляем растягивающийся элемент в конец
-        self.pairs_layout.addStretch()
+        except Exception as e:
+            print(f"Ошибка при создании виджета пары {index}: {e}")
 
-    def create_file_widget(self, video_path, filename, size_mb, index):
-        """Создает виджет для отображения файла с чекбоксом удаления"""
-        file_widget = QWidget()
-        file_layout = QVBoxLayout()
-        file_widget.setLayout(file_layout)
-        file_widget.setMaximumWidth(220)
+    def create_file_widget(self, video_path, filename, size_mb):
+        """Создает виджет для отображения файла с чекбоксом удаления БЕЗ index"""
+        try:
+            file_widget = QWidget()
+            file_layout = QVBoxLayout()
+            file_widget.setLayout(file_layout)
+            file_widget.setMaximumWidth(220)
 
-        # Создаем подробную информацию для tooltip
-        full_tooltip = self.get_full_file_info(video_path, filename, size_mb)
+            # Создаем подробную информацию для tooltip
+            full_tooltip = self.get_full_file_info(video_path, filename, size_mb)
 
-        # Устанавливаем tooltip для всего виджета
-        file_widget.setToolTip(full_tooltip)
+            # Устанавливаем tooltip для всего виджета
+            file_widget.setToolTip(full_tooltip)
 
-        # Чекбокс удаления
-        delete_container = QHBoxLayout()
+            # Чекбокс удаления
+            delete_container = QHBoxLayout()
 
-        checkbox = QCheckBox("🗑️ УДАЛИТЬ")
-        checkbox.setStyleSheet("""
-            QCheckBox {
-                font-weight: bold;
-                color: #e74c3c;
-                spacing: 5px;
-                font-size: 9pt;
-            }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 2px solid #bdc3c7;
-                background-color: white;
-                border-radius: 3px;
-            }
-            QCheckBox::indicator:checked {
-                border: 2px solid #e74c3c;
-                background-color: #e74c3c;
-                border-radius: 3px;
-            }
-        """)
-        checkbox.toggled.connect(lambda checked, path=video_path: self.toggle_mark_deletion(path, checked))
-        checkbox.setToolTip(f"Отметить файл для удаления\n\n{full_tooltip}")
+            checkbox = QCheckBox("🗑️ УДАЛИТЬ")
+            checkbox.setStyleSheet("""
+                QCheckBox {
+                    font-weight: bold;
+                    color: #e74c3c;
+                    spacing: 5px;
+                    font-size: 9pt;
+                }
+                QCheckBox::indicator {
+                    width: 14px;
+                    height: 14px;
+                }
+                QCheckBox::indicator:unchecked {
+                    border: 2px solid #bdc3c7;
+                    background-color: white;
+                    border-radius: 3px;
+                }
+                QCheckBox::indicator:checked {
+                    border: 2px solid #e74c3c;
+                    background-color: #e74c3c;
+                    border-radius: 3px;
+                }
+            """)
+            checkbox.toggled.connect(lambda checked, path=video_path: self.toggle_mark_deletion(path, checked))
+            checkbox.setToolTip(f"Отметить файл для удаления\n\n{full_tooltip}")
 
-        delete_container.addWidget(checkbox)
-        delete_container.addStretch()
+            delete_container.addWidget(checkbox)
+            delete_container.addStretch()
 
-        file_layout.addLayout(delete_container)
+            file_layout.addLayout(delete_container)
 
-        # Информация о файле
-        info_text = QTextEdit()
-        info_text.setFixedHeight(70)
-        info_text.setMaximumWidth(210)
-        info_text.setReadOnly(True)
-        info_text.setStyleSheet("""
-            QTextEdit {
-                background-color: white;
-                border: 1px solid #bdc3c7;
-                border-radius: 3px;
-                padding: 3px;
-                font-size: 8pt;
-                line-height: 1.2;
-            }
-        """)
-        info_text.setToolTip(full_tooltip)  # Добавляем tooltip и к текстовому полю
+            # Информация о файле
+            info_text = QTextEdit()
+            info_text.setFixedHeight(70)
+            info_text.setMaximumWidth(210)
+            info_text.setReadOnly(True)
+            info_text.setStyleSheet("""
+                QTextEdit {
+                    background-color: white;
+                    border: 1px solid #bdc3c7;
+                    border-radius: 3px;
+                    padding: 3px;
+                    font-size: 8pt;
+                    line-height: 1.2;
+                }
+            """)
+            info_text.setToolTip(full_tooltip)
 
-        # Компактная информация о файле С FPS
-        file_info = self.get_compact_file_info(video_path, filename, size_mb)
-        info_text.setPlainText(file_info)
+            # Компактная информация о файле С FPS
+            file_info = self.get_compact_file_info(video_path, filename, size_mb)
+            info_text.setPlainText(file_info)
 
-        file_layout.addWidget(info_text)
+            file_layout.addWidget(info_text)
 
-        # Сохраняем ссылку на чекбокс
-        self.pair_widgets[video_path] = checkbox
+            # Сохраняем ссылку на чекбокс
+            self.pair_widgets[video_path] = checkbox
 
-        return file_widget
+            return file_widget
+
+        except Exception as e:
+            print(f"Ошибка при создании виджета файла {filename}: {e}")
+            # Возвращаем простой виджет в случае ошибки
+            error_widget = QLabel(f"Ошибка: {filename}")
+            return error_widget
 
     def get_full_file_info(self, video_path, filename, size_mb):
         """Возвращает ПОЛНУЮ информацию о файле для tooltip"""
-        try:
+
+        def get_info():
             from src.core.frame_extractor import FrameExtractor
             extractor = FrameExtractor()
             video_info = extractor.get_video_info(video_path)
@@ -646,8 +694,9 @@ class MainWindow(QMainWindow):
                 info += "⚠️ Метаданные недоступны"
 
             return info
-        except Exception as e:
-            return f"📁 {filename}\n📂 {video_path}\n📏 {size_mb:.1f} MB\n⚠️ Ошибка загрузки информации"
+
+        return self.safe_file_operation(lambda x: get_info(), video_path,
+                                        f"📁 {filename}\n📂 {video_path}\n📏 {size_mb:.1f} MB\n⚠️ Ошибка загрузки информации")
 
     def get_compact_file_info(self, video_path, filename, size_mb):
         """Возвращает КОМПАКТНУЮ форматированную информацию о файле С FPS"""
@@ -686,39 +735,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             return f"📁 {filename[:20]}\n📏 {size_mb:.1f}MB\n⚠️ Ошибка"
 
-    # def get_file_info_text(self, video_path, filename, size_mb):
-    #     """Возвращает форматированную информацию о файле"""
-    #     try:
-    #         from src.core.frame_extractor import FrameExtractor
-    #         extractor = FrameExtractor()
-    #         video_info = extractor.get_video_info(video_path)
-    #
-    #         info = f"📁 {filename}\n"
-    #         info += f"📏 {size_mb:.1f} MB\n"
-    #
-    #         if video_info:
-    #             duration = video_info.get('duration', 0)
-    #             width = video_info.get('width', 0)
-    #             height = video_info.get('height', 0)
-    #             fps = video_info.get('fps', 0)
-    #
-    #             info += f"⏱️ {duration:.1f} сек\n"
-    #             info += f"🎞️ {width}x{height}\n"
-    #             info += f"📊 {fps:.1f} FPS"
-    #
-    #         return info
-    #     except Exception as e:
-    #         return f"📁 {filename}\n📏 {size_mb:.1f} MB\n⚠️ Ошибка загрузки метаданных"
-
     def toggle_mark_deletion(self, file_path: str, marked: bool):
-        """Отмечает/снимает отметку файла для удаления"""
-        if marked:
-            self.marked_for_deletion.add(file_path)
-        else:
-            self.marked_for_deletion.discard(file_path)
+        """Отмечает/снимает отметку файла для удаления БЕЗ немедленного обновления UI"""
+        try:
+            if marked:
+                self.marked_for_deletion.add(file_path)
+            else:
+                self.marked_for_deletion.discard(file_path)
 
-        # ДОБАВЛЯЕМ ВЫЗОВ ОБНОВЛЕНИЯ UI
-        self.update_deletion_ui()
+            # ОТЛАДКА: логируем изменение
+            print(f"DEBUG: toggle_mark_deletion - файлов отмечено: {len(self.marked_for_deletion)}")
+
+            # Обновляем UI с небольшой задержкой чтобы избежать накопления вызовов
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(10, self.update_deletion_ui)
+
+        except Exception as e:
+            print(f"Ошибка в toggle_mark_deletion: {e}")
 
     def update_deletion_ui(self):
         """Обновляет UI управления удалением с подсчетом размера"""
@@ -751,107 +784,88 @@ class MainWindow(QMainWindow):
             print(f"Ошибка при обновлении UI удаления: {e}")
 
     def delete_marked_files(self):
-        """Удаляет все отмеченные файлы с улучшенным UI"""
-        if not self.marked_for_deletion:
-            return
+        """Удаляет все отмеченные файлы с улучшенной защитой"""
+        try:
+            print("DEBUG: delete_marked_files начат")
 
-        # Создаем детальный список файлов для подтверждения
-        file_details = []
-        total_size = 0
+            if not self.marked_for_deletion:
+                print("DEBUG: Нет файлов для удаления")
+                return
 
-        for path in self.marked_for_deletion:
-            try:
-                size = os.path.getsize(path) / (1024 * 1024)
-                total_size += size
-                file_details.append(f"• {os.path.basename(path)} ({size:.1f} MB)")
-            except:
-                file_details.append(f"• {os.path.basename(path)} (размер неизвестен)")
+            # Создаем копию для безопасной итерации
+            files_to_delete = list(self.marked_for_deletion)
+            valid_files = [f for f in files_to_delete if os.path.exists(f)]
 
-        file_list = "\n".join(file_details[:10])  # Показываем первые 10 файлов
-        if len(file_details) > 10:
-            file_list += f"\n... и еще {len(file_details) - 10} файлов"
+            if not valid_files:
+                QMessageBox.warning(self, "Внимание", "Нет действительных файлов для удаления")
+                return
 
-        # Диалог подтверждения с детальной информацией
-        confirm_dialog = QMessageBox(self)
-        confirm_dialog.setWindowTitle("📋 Подтверждение массового удаления")
-        confirm_dialog.setIcon(QMessageBox.Icon.Question)
-        confirm_dialog.setText(
-            f"<b>Вы собираетесь удалить {len(self.marked_for_deletion)} файлов</b><br>"
-            f"<i>Общий размер: {total_size:.1f} MB</i>"
-        )
-        confirm_dialog.setInformativeText(
-            f"<b>Список файлов:</b><br>{file_list}"
-        )
+            # Диалог подтверждения
+            reply = QMessageBox.question(
+                self,
+                "📋 Подтверждение удаления",
+                f"Вы уверены, что хотите удалить {len(valid_files)} файлов?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
 
-        # Добавляем опцию безопасного удаления
-        confirm_dialog.setCheckBox(QCheckBox("Перемещать в корзину (рекомендуется)"))
-        confirm_dialog.checkBox().setChecked(True)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
-        confirm_dialog.setStandardButtons(
-            QMessageBox.StandardButton.Yes |
-            QMessageBox.StandardButton.No
-        )
-        confirm_dialog.setDefaultButton(QMessageBox.StandardButton.No)
-
-        reply = confirm_dialog.exec()
-
-        if reply == QMessageBox.StandardButton.Yes:
-            use_trash = confirm_dialog.checkBox().isChecked()
+            # Удаляем файлы БЕЗ прогресс-диалога (упрощаем)
             deleted_count = 0
             errors = []
 
-            # Прогресс-диалог
-            progress_dialog = QProgressDialog("Удаление файлов...", "Отмена", 0, len(self.marked_for_deletion), self)
-            progress_dialog.setWindowTitle("Удаление файлов")
-            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-            progress_dialog.show()
-
-            for i, file_path in enumerate(list(self.marked_for_deletion)):
-                progress_dialog.setValue(i)
-                progress_dialog.setLabelText(f"Удаление: {os.path.basename(file_path)}")
-
-                if progress_dialog.wasCanceled():
-                    break
-
+            for file_path in valid_files:
                 try:
-                    if use_trash:
-                        # Безопасное удаление в корзину
-                        import send2trash
-                        send2trash.send2trash(file_path)
-                    else:
-                        # Полное удаление
-                        os.remove(file_path)
-
+                    os.remove(file_path)
                     deleted_count += 1
-                    self.marked_for_deletion.remove(file_path)
-
-                    # Удаляем пары, содержащие удаленный файл
-                    self.current_pairs = [pair for pair in self.current_pairs
-                                          if file_path not in (pair[0], pair[1])]
-
+                    self.marked_for_deletion.discard(file_path)
                 except Exception as e:
-                    errors.append(f"{os.path.basename(file_path)}: {e}")
+                    errors.append(f"{os.path.basename(file_path)}: {str(e)}")
 
-            progress_dialog.close()
+            # Обновляем пары - упрощенная версия
+            if hasattr(self, 'current_pairs'):
+                self.current_pairs = [
+                    pair for pair in self.current_pairs
+                    if os.path.exists(pair[0]) and os.path.exists(pair[1])
+                ]
 
             # Обновляем UI
             self.update_deletion_ui()
-            self.create_pair_buttons(self.current_pairs)
+
+            # ПЕРЕСОЗДАЕМ ВИДЖЕТЫ ТОЛЬКО ЕСЛИ ЕСТЬ ИЗМЕНЕНИЯ
+            if deleted_count > 0 and hasattr(self, 'current_pairs'):
+                self.create_pair_buttons(self.current_pairs)
 
             # Показываем результаты
+            result_msg = f"✅ Удалено {deleted_count} файлов"
             if errors:
-                error_msg = "\n".join(errors[:10])  # Показываем первые 10 ошибок
-                if len(errors) > 10:
-                    error_msg += f"\n... и еще {len(errors) - 10} ошибок"
-
-                QMessageBox.warning(self, "Частичный успех",
-                                    f"✅ Удалено {deleted_count} файлов\n\n"
-                                    f"❌ Ошибки ({len(errors)}):\n{error_msg}")
+                result_msg += f"\n❌ Ошибки: {len(errors)}"
+                QMessageBox.warning(self, "Результат", result_msg)
             else:
-                QMessageBox.information(self, "Успех",
-                                        f"✅ Успешно удалено {deleted_count} файлов")
+                QMessageBox.information(self, "Успех", result_msg)
 
-            self.log_text.append(f"🗑️ Удалено {deleted_count} файлов (в корзину: {'да' if use_trash else 'нет'})")
+            self.log_text.append(f"🗑️ Удалено {deleted_count} файлов")
+            print("DEBUG: delete_marked_files завершен")
+
+        except Exception as e:
+            error_msg = f"Критическая ошибка при удалении: {str(e)}"
+            print(error_msg)
+            QMessageBox.critical(self, "Ошибка", error_msg)
+            import traceback
+            traceback.print_exc()
+
+    def safe_file_operation(self, operation, file_path, default=None):
+        """Безопасное выполнение операций с файлами"""
+        try:
+            if os.path.exists(file_path):
+                return operation(file_path)
+            else:
+                return default
+        except Exception as e:
+            print(f"Ошибка при операции с файлом {file_path}: {e}")
+            return default
 
     def create_group_buttons(self, groups):
         """Создает кнопки для групп с улучшенной информацией"""
@@ -922,14 +936,32 @@ class MainWindow(QMainWindow):
         self.log_text.append(info)
 
     def clear_pair_buttons(self):
-        """Очищает кнопки пар"""
-        if hasattr(self, 'pairs_layout') and self.pairs_layout:
-            # Удаляем все виджеты из layout
-            for i in reversed(range(self.pairs_layout.count())):
-                item = self.pairs_layout.itemAt(i)
-                if item and item.widget():
-                    item.widget().setParent(None)
-                    item.widget().deleteLater()
+        """Очищает кнопки пар с защитой от рекурсии"""
+        try:
+            if not hasattr(self, 'pairs_layout') or not self.pairs_layout:
+                return
+
+            # Отключаем сигналы чтобы избежать рекурсивных вызовов
+            for checkbox in self.pair_widgets.values():
+                if checkbox:
+                    try:
+                        checkbox.toggled.disconnect()
+                    except:
+                        pass
+
+            # Очищаем layout
+            while self.pairs_layout.count():
+                item = self.pairs_layout.takeAt(0)
+                if item.widget():
+                    widget = item.widget()
+                    widget.setParent(None)
+                    widget.deleteLater()
+
+            self.pair_widgets.clear()
+            print("DEBUG: clear_pair_buttons завершен")
+
+        except Exception as e:
+            print(f"Ошибка в clear_pair_buttons: {e}")
 
     def show_simple_comparison(self, video_paths):
         """Показывает простое сравнение в основном окне как запасной вариант"""
@@ -1028,17 +1060,30 @@ class MainWindow(QMainWindow):
         self.log_text.append("\n🔄 Список файлов обновлен")
 
     def closeEvent(self, event):
-        """Обрабатывает закрытие приложения"""
-        # Останавливаем потоки если они работают
-        if self.optimized_scan_thread and self.optimized_scan_thread.isRunning():
-            self.optimized_scan_thread.terminate()
-            self.optimized_scan_thread.wait()
+        """Обрабатывает закрытие приложения с улучшенной очисткой"""
+        try:
+            print("DEBUG: Завершение приложения...")
 
-        if self.compare_thread and self.compare_thread.isRunning():
-            self.compare_thread.terminate()
-            self.compare_thread.wait()
+            # Останавливаем потоки если они работают
+            if hasattr(self,
+                       'optimized_scan_thread') and self.optimized_scan_thread and self.optimized_scan_thread.isRunning():
+                self.optimized_scan_thread.terminate()
+                self.optimized_scan_thread.wait(1000)  # Ждем 1 секунду
 
-        event.accept()
+            if hasattr(self, 'compare_thread') and self.compare_thread and self.compare_thread.isRunning():
+                self.compare_thread.terminate()
+                self.compare_thread.wait(1000)
+
+            # Очищаем виджеты
+            if hasattr(self, 'pairs_layout') and self.pairs_layout:
+                self.clear_pair_buttons()
+
+            print("DEBUG: Приложение завершено корректно")
+            event.accept()
+
+        except Exception as e:
+            print(f"Ошибка при завершении приложения: {e}")
+            event.accept()  # Все равно принимаем закрытие
 
 
 # =============================================================================
