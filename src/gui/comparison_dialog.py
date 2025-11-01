@@ -1,7 +1,6 @@
 import os
 import gc
 import cv2
-import numpy as np
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QWidget, QProgressBar, QMessageBox
@@ -108,7 +107,10 @@ class SafeFrameExtractionThread(QThread):
 
 
 class ComparisonDialog(QDialog):
-    """Стабильный диалог для side-by-side сравнения"""
+    """Стабильный диалог для side-by-side сравнения с функцией удаления"""
+
+    # Сигнал для уведомления основного окна об удалении файла
+    file_deleted = pyqtSignal(str)
 
     def __init__(self, video_paths, parent=None):
         super().__init__(parent)
@@ -116,6 +118,7 @@ class ComparisonDialog(QDialog):
         self.frames_data = {}
         self.frame_similarities = []
         self.current_frame_index = 0
+        self.deleted_files = set()  # Множество удаленных файлов
 
         self.setWindowTitle("Side-by-Side Сравнение Видео")
         self.setGeometry(100, 50, 1200, 800)
@@ -125,7 +128,7 @@ class ComparisonDialog(QDialog):
         self.extract_frames()
 
     def setup_ui(self):
-        """Создает стабильный интерфейс"""
+        """Создает стабильный интерфейс с кнопками удаления"""
         layout = QVBoxLayout()
         self.setLayout(layout)
 
@@ -160,7 +163,7 @@ class ComparisonDialog(QDialog):
         self.create_control_buttons(layout)
 
     def create_video_panel(self, video_index):
-        """Создает панель для видео"""
+        """Создает панель для видео с кнопкой удаления"""
         panel = QWidget()
         layout = QVBoxLayout()
         panel.setLayout(layout)
@@ -170,6 +173,26 @@ class ComparisonDialog(QDialog):
         title.setStyleSheet("font-size: 14pt; font-weight: bold;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+
+        # Кнопка удаления
+        delete_btn = QPushButton("🗑️ Удалить файл")
+        delete_btn.clicked.connect(lambda: self.delete_video(video_index))
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                font-weight: bold;
+                padding: 5px;
+                margin: 5px;
+            }
+            QPushButton:hover {
+                background-color: #ff5252;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+            }
+        """)
+        layout.addWidget(delete_btn)
 
         # Метка схожести
         similarity_label = QLabel("Схожесть: ---")
@@ -212,6 +235,68 @@ class ComparisonDialog(QDialog):
         layout.addWidget(file_info)
 
         return panel
+
+    def delete_video(self, video_index):
+        """Удаляет видеофайл с подтверждением"""
+        video_path = self.video_paths[video_index]
+
+        if video_path in self.deleted_files:
+            QMessageBox.information(self, "Информация", "Этот файл уже удален")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Вы уверены, что хотите удалить файл?\n\n{os.path.basename(video_path)}\n\nРазмер: {os.path.getsize(video_path) / (1024 * 1024):.1f} MB",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                # Используем send2trash для безопасного удаления (в корзину)
+                import send2trash
+                send2trash.send2trash(video_path)
+
+                self.deleted_files.add(video_path)
+
+                # Обновляем интерфейс
+                self.update_after_deletion(video_index)
+
+                # Отправляем сигнал в основное окно
+                self.file_deleted.emit(video_path)
+
+                QMessageBox.information(self, "Успех", "Файл перемещен в корзину")
+
+            except ImportError:
+                # Если send2trash не установлен, используем обычное удаление
+                try:
+                    os.remove(video_path)
+                    self.deleted_files.add(video_path)
+                    self.update_after_deletion(video_index)
+                    self.file_deleted.emit(video_path)
+                    QMessageBox.information(self, "Успех", "Файл удален")
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Не удалось удалить файл: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось удалить файл: {e}")
+
+    def update_after_deletion(self, video_index):
+        """Обновляет интерфейс после удаления файла"""
+        # Обновляем информацию о файле
+        if video_index < len(self.file_infos) and self.file_infos[video_index]:
+            self.file_infos[video_index].setPlainText(
+                f"❌ ФАЙЛ УДАЛЕН\n\n"
+                f"📁 Файл: {os.path.basename(self.video_paths[video_index])}\n"
+                f"🗑️ Статус: Перемещен в корзину"
+            )
+
+        # Отключаем кнопку удаления
+        panel = self.left_panel if video_index == 0 else self.right_panel
+        delete_btn = panel.findChild(QPushButton)
+        if delete_btn:
+            delete_btn.setEnabled(False)
+            delete_btn.setText("🗑️ Файл удален")
 
     def create_control_buttons(self, layout):
         """Создает кнопки управления"""
@@ -392,8 +477,8 @@ class ComparisonDialog(QDialog):
         try:
             # Останавливаем поток если работает
             if hasattr(self, 'extraction_thread') and self.extraction_thread.isRunning():
-                self.extraction_thread.requestInterruption()  # Вежливая остановка
-                if not self.extraction_thread.wait(3000):  # Ждем до 3 секунд
+                self.extraction_thread.requestInterruption()
+                if not self.extraction_thread.wait(3000):
                     print("Поток не ответил, принудительная остановка")
                     self.extraction_thread.terminate()
                     self.extraction_thread.wait()
