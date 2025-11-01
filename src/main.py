@@ -1,10 +1,10 @@
 import sys
 import os
-import time
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox
+    QLineEdit, QMessageBox, QScrollArea  # Добавляем QScrollArea
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl
 from src.config import Config
@@ -98,9 +98,12 @@ class MainWindow(QMainWindow):
         self.selected_folder = ""
         self.video1_path = ""
         self.video2_path = ""
-        self.current_groups = []
+        self.current_pairs = []
         self.optimized_scan_thread = None
         self.compare_thread = None
+        # Атрибуты для управления кнопками пар
+        self.pairs_container = None
+        self.pairs_layout = None
 
         # Создаем интерфейс
         self.setup_ui()
@@ -119,7 +122,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.compare_tab, "🔍 Сравнение видео")
 
     def create_scan_tab(self):
-        """Создает вкладку для сканирования папки"""
+        """Создает вкладку для сканирования папки с прокруткой"""
         widget = QWidget()
         layout = QVBoxLayout()
         widget.setLayout(layout)
@@ -172,11 +175,26 @@ class MainWindow(QMainWindow):
             "• Только затем делает глубокий анализ кадров"
         )
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(200)  # Ограничиваем высоту лога
         layout.addWidget(self.log_text)
 
-        # Кнопки для групп (будем создавать динамически)
-        self.groups_layout = QVBoxLayout()
-        layout.addLayout(self.groups_layout)
+        # Заголовок для списка пар
+        pairs_label = QLabel("🎯 Найденные пары для сравнения:")
+        pairs_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(pairs_label)
+
+        # ПРОКРУЧИВАЕМАЯ ОБЛАСТЬ ДЛЯ КНОПОК ПАР
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumHeight(300)  # Минимальная высота
+        scroll_area.setMaximumHeight(600)  # Максимальная высота
+
+        # Контейнер для кнопок внутри прокрутки
+        self.pairs_container = QWidget()
+        self.pairs_layout = QVBoxLayout(self.pairs_container)
+        scroll_area.setWidget(self.pairs_container)
+
+        layout.addWidget(scroll_area)
 
         # Статусная строка
         self.status_label = QLabel("Готов к работе")
@@ -262,7 +280,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
 
         # Очищаем предыдущие кнопки групп
-        self.clear_group_buttons()
+        self.clear_pair_buttons()
 
         self.log_text.clear()
         self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
@@ -288,7 +306,7 @@ class MainWindow(QMainWindow):
         self.log_text.append(f"⚡ {message}")
 
     def optimized_scan_finished(self, results: list):
-        """Обрабатывает результаты оптимизированного сканирования"""
+        """Обрабатывает результаты оптимизированного сканирования - ПОКАЗЫВАЕМ ВСЕ ПАРЫ"""
         self.log_text.append("\n" + "═" * 50)
         self.log_text.append("✅ СКАНИРОВАНИЕ ЗАВЕРШЕНО!")
 
@@ -297,139 +315,148 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Похожие видео не найдены")
             return
 
-        # Группируем результаты для удобного отображения
-        groups = self._group_similar_videos(results)
+        self.log_text.append(f"📊 Найдено пар похожих видео: {len(results)}")
+        self.status_label.setText(f"Найдено {len(results)} пар похожих видео")
 
-        self.log_text.append(f"📊 Найдено групп похожих видео: {len(groups)}")
-        self.log_text.append(f"📈 Всего пар: {len(results)}")
-        self.status_label.setText(f"Найдено {len(groups)} групп похожих видео")
+        # Сохраняем все пары для последующего использования
+        self.current_pairs = results
 
-        # Сохраняем группы для последующего использования
-        self.current_groups = groups
+        # Показываем СВОДКУ пар в логе (не все детали)
+        high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
+        medium_similarity = sum(1 for _, _, sim, _ in results if 0.6 <= sim <= 0.8)
+        low_similarity = sum(1 for _, _, sim, _ in results if sim < 0.6)
 
-        # Показываем группы с вычислением средней схожести
-        for i, group in enumerate(groups, 1):
-            # Вычисляем среднюю схожесть для группы
-            total_similarity = 0
-            for video_path, similarity in group:
-                total_similarity += similarity
-            avg_similarity = total_similarity / len(group) if group else 0
+        self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
+        self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
+        self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
 
-            self.log_text.append(f"\n🎬 ГРУППА {i} ({len(group)} видео, средняя схожесть: {avg_similarity:.1%}):")
+        # Создаем кнопки для сравнения КАЖДОЙ пары
+        self.create_pair_buttons(results)
 
-            for video_path, similarity in group:
-                file_size = os.path.getsize(video_path) / (1024 * 1024)  # в MB
-                self.log_text.append(
-                    f"   📹 {os.path.basename(video_path)} ({file_size:.1f} MB, схожесть: {similarity:.1%})")
+    def create_pair_buttons(self, pairs: list):
+        """Создает кнопки для сравнения КАЖДОЙ пары отдельно в прокручиваемой области"""
+        # Очищаем предыдущие кнопки
+        self.clear_pair_buttons()
 
-        # Создаем кнопки для сравнения групп с указанием средней схожести
-        self.create_group_buttons(groups)
+        for i, (video1, video2, similarity, details) in enumerate(pairs, 1):
+            file1 = os.path.basename(video1)
+            file2 = os.path.basename(video2)
+            size1 = os.path.getsize(video1) / (1024 * 1024)
+            size2 = os.path.getsize(video2) / (1024 * 1024)
+
+            # Создаем информативную кнопку
+            pair_btn = QPushButton(
+                f"🔍 Пара {i}: {similarity:.1%} схожести\n"
+                f"📹 {file1} ({size1:.1f}MB)\n"
+                f"📹 {file2} ({size2:.1f}MB)"
+            )
+            pair_btn.clicked.connect(lambda checked, v1=video1, v2=video2: self.open_comparison_dialog([v1, v2]))
+            pair_btn.setStyleSheet("""
+                QPushButton {
+                    text-align: left;
+                    padding: 8px;
+                    margin: 2px;
+                    background-color: #f0f0f0;
+                    border: 1px solid #ccc;
+                }
+                QPushButton:hover {
+                    background-color: #e0e0e0;
+                }
+            """)
+            self.pairs_layout.addWidget(pair_btn)
+
+        # Добавляем растягивающийся элемент в конец
+        self.pairs_layout.addStretch()
 
     def create_group_buttons(self, groups):
-        """Создает кнопки для сравнения групп с указанием процента схожести"""
+        """Создает кнопки для групп с улучшенной информацией"""
         for i, group in enumerate(groups, 1):
-            # Вычисляем среднюю схожесть для группы
-            total_similarity = 0
-            for video_path, similarity in group:
-                total_similarity += similarity
-            avg_similarity = total_similarity / len(group) if group else 0
+            # Создаем информационную строку для группы
+            group_info = f"Группа {i} ({len(group)} видео)"
 
-            compare_btn = QPushButton(f"🔍 Сравнить группу {i} (схожесть: {avg_similarity:.1%})")
-            compare_btn.clicked.connect(lambda checked, idx=i - 1: self.open_group_comparison(idx))
-            self.groups_layout.addWidget(compare_btn)
+            # Добавляем информацию о размерах файлов
+            total_size = sum(os.path.getsize(video) for video in group) / (1024 * 1024)  # MB
+            avg_size = total_size / len(group) if group else 0
 
-    def clear_group_buttons(self):
-        """Очищает кнопки групп"""
-        # Удаляем все кнопки из layout
-        for i in reversed(range(self.groups_layout.count())):
-            widget = self.groups_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def open_group_comparison(self, group_index):
-        """Открывает сравнение для выбранной группы"""
-        if 0 <= group_index < len(self.current_groups):
-            group = self.current_groups[group_index]
-            video_paths = [video_path for video_path, similarity in group]
-
-            if len(video_paths) >= 2:
-                self.open_comparison_dialog(video_paths)
-            else:
-                self.show_warning("В группе должно быть как минимум 2 видео для сравнения")
-        else:
-            self.show_warning("Группа не найдена")
+            group_btn = QPushButton(f"🎬 {group_info}\n"
+                                    f"📏 Файлов: {len(group)}, Средний размер: {avg_size:.1f} MB")
+            group_btn.clicked.connect(lambda checked, idx=i - 1: self.open_group_management(idx))
+            group_btn.setStyleSheet("QPushButton { text-align: left; padding: 8px; }")
+            self.groups_layout.addWidget(group_btn)
 
     def open_comparison_dialog(self, video_paths):
-        """Открывает диалог для side-by-side сравнения видео"""
+        """Открывает side-by-side сравнение для выбранной пары"""
         if len(video_paths) < 2:
             self.show_warning("Для сравнения нужно как минимум 2 видеофайла!")
             return
 
         try:
-            # Пробуем импортировать и открыть диалог сравнения
+            # Пробуем открыть полноценный side-by-side диалог
             from src.gui.comparison_dialog import ComparisonDialog
             dialog = ComparisonDialog(video_paths, self)
             dialog.exec()
-        except ImportError as e:
-            print(f"Ошибка импорта: {e}")
-            self.show_simple_comparison(video_paths)
         except Exception as e:
-            print(f"Ошибка при открытии диалога: {e}")
-            self.show_simple_comparison(video_paths)
+            print(f"Ошибка при открытии ComparisonDialog: {e}")
+            # Fallback на простой диалог
+            try:
+                from src.gui.simple_comparison_dialog import SimpleComparisonDialog
+                self.log_text.append("⚠️ Используем упрощенный режим сравнения")
+                dialog = SimpleComparisonDialog(video_paths, self)
+                dialog.exec()
+            except Exception as e2:
+                print(f"Ошибка при открытии SimpleComparisonDialog: {e2}")
+                # Минимальный fallback
+                self.show_pair_info(video_paths)
 
-    def show_simple_comparison(self, video_paths):
-        """Показывает упрощенное сравнение если основной диалог не работает"""
-        info = "Side-by-Side сравнение\n\n"
-        info += "Сравниваемые файлы:\n"
-        for i, path in enumerate(video_paths[:2]):  # Берем только первые 2
+    def show_pair_info(self, video_paths):
+        """Показывает информацию о паре если диалоги не работают"""
+        info = "🎬 ИНФОРМАЦИЯ О ПАРЕ:\n\n"
+        for i, path in enumerate(video_paths[:2]):
             if os.path.exists(path):
                 size = os.path.getsize(path) / (1024 * 1024)
-                info += f"\n{i + 1}. {os.path.basename(path)}\n"
-                info += f"   Размер: {size:.2f} MB\n"
-                info += f"   Путь: {path}\n"
+                info += f"Видео {i + 1}:\n"
+                info += f"📁 Файл: {os.path.basename(path)}\n"
+                info += f"📏 Размер: {size:.1f} MB\n"
+                info += f"📂 Путь: {path}\n\n"
             else:
-                info += f"\n{i + 1}. ФАЙЛ НЕ НАЙДЕН: {path}\n"
+                info += f"Видео {i + 1}: ФАЙЛ НЕ НАЙДЕН - {path}\n\n"
 
-        self.log_text.append(f"\n🔍 СРАВНЕНИЕ ГРУППЫ:\n{info}")
+        self.log_text.append(info)
+
+    def clear_pair_buttons(self):
+        """Очищает кнопки пар"""
+        if hasattr(self, 'pairs_layout') and self.pairs_layout:
+            # Удаляем все виджеты из layout
+            for i in reversed(range(self.pairs_layout.count())):
+                item = self.pairs_layout.itemAt(i)
+                if item and item.widget():
+                    item.widget().setParent(None)
+                    item.widget().deleteLater()
+
+    def show_simple_comparison(self, video_paths):
+        """Показывает простое сравнение в основном окне как запасной вариант"""
+        info = "🔍 СРАВНЕНИЕ ВИДЕО (основное окно):\n\n"
+
+        for i, path in enumerate(video_paths[:2]):
+            if os.path.exists(path):
+                size = os.path.getsize(path) / (1024 * 1024)
+                info += f"Видео {i + 1}: {os.path.basename(path)}\n"
+                info += f"   Размер: {size:.1f} MB\n"
+                info += f"   Путь: {path}\n\n"
+            else:
+                info += f"Видео {i + 1}: ФАЙЛ НЕ НАЙДЕН - {path}\n\n"
+
+        info += "⚠️ Для детального сравнения проверьте наличие файлов:\n"
+        info += "   - comparison_dialog.py\n"
+        info += "   - simple_comparison_dialog.py\n"
+        info += "   в папке src/gui/"
+
+        self.log_text.append(info)
 
     def scan_thread_finished(self):
         """Вызывается когда поток сканирования завершил работу"""
         self.set_scan_ui_enabled(True)
         self.progress_bar.setVisible(False)
-
-    def _group_similar_videos(self, results: list) -> list:
-        """Группирует похожие видео в логические группы"""
-        groups = []
-        used_videos = set()
-
-        for video1, video2, similarity, _ in results:
-            # Если оба видео уже в группах, пропускаем
-            if video1 in used_videos and video2 in used_videos:
-                continue
-
-            # Ищем существующую группу для одного из видео
-            found_group = None
-            for group in groups:
-                group_videos = [v[0] for v in group]
-                if video1 in group_videos or video2 in group_videos:
-                    found_group = group
-                    break
-
-            # Если группы нет, создаем новую
-            if found_group is None:
-                found_group = []
-                groups.append(found_group)
-
-            # Добавляем видео в группу если их там еще нет
-            if video1 not in used_videos:
-                found_group.append((video1, similarity))
-                used_videos.add(video1)
-
-            if video2 not in used_videos:
-                found_group.append((video2, similarity))
-                used_videos.add(video2)
-
-        return groups
 
     # =============================================================================
     # МЕТОДЫ ДЛЯ ВКЛАДКИ СРАВНЕНИЯ

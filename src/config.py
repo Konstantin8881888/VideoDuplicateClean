@@ -32,6 +32,7 @@ class Config:
     # Настройки производительности
     MAX_CONCURRENT_THREADS = 2
     THREAD_TIMEOUT_SECONDS = 30
+    SAFE_COMPARISON_FRAMES = 5  # Количество кадров для безопасного сравнения
 
     @classmethod
     def validate(cls):

@@ -13,13 +13,13 @@ def test_imports():
     sys.path.insert(0, src_path)
 
     tests = [
-        ("core", "FileScanner"),
-        ("core", "FrameExtractor"),
-        ("core", "VideoComparator"),
-        ("algorithms", "BaseComparator"),
-        ("algorithms", "HistogramComparator"),
-        ("algorithms", "PHashComparator"),
-        ("algorithms", "ComparisonManager"),
+        ("src.core", "FileScanner"),
+        ("src.core", "FrameExtractor"),
+        ("src.core", "VideoComparator"),
+        ("src.algorithms", "BaseComparator"),
+        ("src.algorithms", "HistogramComparator"),
+        ("src.algorithms", "PHashComparator"),
+        ("src.algorithms", "ComparisonManager"),
     ]
 
     all_passed = True

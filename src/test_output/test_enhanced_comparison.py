@@ -37,7 +37,7 @@ def check_frame_count():
     """Проверяет количество извлекаемых кадров"""
     print("\n🔍 Проверка количества кадров:")
 
-    from src.gui.comparison_dialog import FrameExtractionThread
+    from src.gui.comparison_dialog import SafeFrameExtractionThread
 
     # Создаем mock-объект для проверки
     class MockThread:
