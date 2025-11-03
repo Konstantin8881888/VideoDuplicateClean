@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import QUrl
 
 
 class SafeFrameExtractionThread(QThread):
@@ -19,7 +20,7 @@ class SafeFrameExtractionThread(QThread):
     def __init__(self, video_paths, num_frames=10):
         super().__init__()
         self.video_paths = video_paths
-        self.num_frames = num_frames
+        self.num_frames = int(num_frames or 10)
         self._is_running = True
 
     def stop(self):
@@ -27,35 +28,62 @@ class SafeFrameExtractionThread(QThread):
         self._is_running = False
 
     def safe_extract_frames(self, video_path, num_frames):
-        """Безопасное извлечение кадров с обработкой ошибок"""
+        """Безопасное извлечение кадров с обработкой ошибок (локальная нормализация путей)."""
         try:
+            # Локальная нормализация пути (не требует методов диалога)
+            path = video_path or ""
+            try:
+                from PyQt6.QtCore import QUrl
+                if isinstance(path, str) and path.startswith("file://"):
+                    local = QUrl(path).toLocalFile()
+                    if local:
+                        path = local
+            except Exception:
+                # если QUrl недоступен — просто продолжим
+                pass
+
+            if path.startswith("\\\\?\\"):
+                path = path[4:]
+
+            path = path.replace("/", os.sep)
+            path = os.path.normpath(path)
+            path = os.path.abspath(path)
+
+            # Вызов extractor по нормализованному пути
             from src.core.frame_extractor import FrameExtractor
             extractor = FrameExtractor()
-            return extractor.extract_frames(video_path, num_frames)
+            return extractor.extract_frames(path, int(num_frames or 10))
+
         except Exception as e:
             print(f"Ошибка при извлечении кадров из {video_path}: {e}")
             return []
 
     def calculate_similarities(self, frames1, frames2):
-        """Вычисляет схожести между кадрами с защитой от ошибок"""
+        """Вычисляет схожести между кадрами с защитой от ошибок (возвращает подробные результаты)."""
         try:
             from src.algorithms.comparison_manager import ComparisonManager
             manager = ComparisonManager()
 
+            max_frames = max(len(frames1), len(frames2))
             similarities = []
-            min_frames = min(len(frames1), len(frames2))
 
-            for i in range(min_frames):
-                if frames1[i] is not None and frames2[i] is not None:
-                    result = manager.compare_images(frames1[i], frames2[i])
-                    similarities.append(result.get('overall', 0.0))
+            for i in range(max_frames):
+                f1 = frames1[i] if i < len(frames1) else None
+                f2 = frames2[i] if i < len(frames2) else None
+
+                if f1 is not None and f2 is not None:
+                    res = manager.compare_images(f1, f2)  # ожидаем dict с 'overall' и детальными алгоритмами
+                    # Сохраняем число (overall) для быстрого доступа
+                    similarities.append(res.get('overall', 0.0))
                 else:
                     similarities.append(0.0)
 
             return similarities
         except Exception as e:
             print(f"Ошибка при вычислении схожестей: {e}")
-            return [0.0] * min(len(frames1), len(frames2))
+            # если ошибка — возвращаем пустой список или нули длины минимальной
+            min_len = min(len(frames1), len(frames2))
+            return [0.0] * (max(len(frames1), len(frames2))) if (frames1 or frames2) else []
 
     def run(self):
         """Основной метод с защитой от падений и поддержкой прерывания"""
@@ -109,7 +137,9 @@ class SafeFrameExtractionThread(QThread):
 class ComparisonDialog(QDialog):
     """Стабильный диалог для side-by-side сравнения с функцией удаления"""
 
-    # Сигнал для уведомления основного окна об удалении файла
+    # Сигнал для запроса удаления файла у родителя (MainWindow)
+    file_delete_requested = pyqtSignal(str)
+    # Сигнал для уведомления основного окна об удалении файла (оставляем совместимый сигнал)
     file_deleted = pyqtSignal(str)
 
     def __init__(self, video_paths, parent=None):
@@ -127,6 +157,50 @@ class ComparisonDialog(QDialog):
         # Запускаем безопасное извлечение кадров
         self.extract_frames()
 
+    # -----------------------
+    # Вспомогательные методы
+    # -----------------------
+    def _normalize_local_path(self, raw_path: str) -> str:
+        """Лёгкая локальная нормализация (file://, \\?\\) для безопасного использования внутри диалога"""
+        try:
+            path = raw_path or ""
+            if path.startswith("file://"):
+                q = QUrl(path)
+                local = q.toLocalFile()
+                if local:
+                    path = local
+            if path.startswith("\\\\?\\"):
+                path = path[4:]
+            # нормализуем слэши и путь
+            path = path.replace("/", os.sep)
+            path = os.path.normpath(path)
+            return os.path.abspath(path)
+        except Exception:
+            return raw_path
+
+    def _safe_remove_local(self, raw_path: str) -> (bool, str):
+        """Попытка локального безопасного удаления (fallback, если родитель не обработал запрос)"""
+        try:
+            path = self._normalize_local_path(raw_path)
+            candidates = [raw_path, path]
+            # добавим вариант без префикса, если он есть
+            if raw_path.startswith("\\\\?\\"):
+                candidates.append(raw_path[4:])
+            last_err = ""
+            for c in candidates:
+                try:
+                    if os.path.exists(c):
+                        os.remove(c)
+                        return True, ""
+                except Exception as e:
+                    last_err = str(e)
+            return False, last_err or "Файл не найден"
+        except Exception as e:
+            return False, str(e)
+
+    # -----------------------
+    # UI setup и логика
+    # -----------------------
     def setup_ui(self):
         """Создает стабильный интерфейс с кнопками удаления"""
         layout = QVBoxLayout()
@@ -237,49 +311,50 @@ class ComparisonDialog(QDialog):
         return panel
 
     def delete_video(self, video_index):
-        """Удаляет видеофайл с подтверждением"""
-        video_path = self.video_paths[video_index]
-
-        if video_path in self.deleted_files:
-            QMessageBox.information(self, "Информация", "Этот файл уже удален")
+        """Запрашивает удаление у родителя; если родитель не подключён — пытаемся локально."""
+        # Защита: если индекс вне диапазона
+        if video_index >= len(self.video_paths):
+            QMessageBox.warning(self, "Ошибка", "Некорректный индекс файла")
             return
+
+        video_path = self.video_paths[video_index]
+        # Подтверждение пользователем
+        try:
+            size_mb = (os.path.getsize(video_path) / (1024 * 1024)) if os.path.exists(self._normalize_local_path(video_path)) else 0.0
+        except Exception:
+            size_mb = 0.0
 
         reply = QMessageBox.question(
             self,
             "Подтверждение удаления",
-            f"Вы уверены, что хотите удалить файл?\n\n{os.path.basename(video_path)}\n\nРазмер: {os.path.getsize(video_path) / (1024 * 1024):.1f} MB",
+            f"Вы уверены, что хотите удалить файл?\n\n{os.path.basename(video_path)}\n\nРазмер: {size_mb:.1f} MB",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
-            try:
-                # Используем send2trash для безопасного удаления (в корзину)
-                import send2trash
-                send2trash.send2trash(video_path)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-                self.deleted_files.add(video_path)
+        # Если у диалога подключён обработчик file_delete_requested — используем его (рекомендуемый поток)
+        if self.receivers(self.file_delete_requested) > 0:
+            # Отправляем запрос родителю — родитель должен выполнить удаление и затем эмитнуть file_deleted
+            self.status_label.setText("Запрос на удаление отправлен...")
+            self.file_delete_requested.emit(video_path)
+            # дальше родитель вызовет dialog.file_deleted.emit(path) после фактического удаления
+            return
 
-                # Обновляем интерфейс
-                self.update_after_deletion(video_index)
+        # Иначе — fallback: пытаемся безопасно удалить локально (не рекомендуется в основной архитектуре)
+        ok, err = self._safe_remove_local(video_path)
+        if not ok:
+            QMessageBox.critical(self, "Ошибка при удалении", f"Не удалось удалить файл: {err}")
+            return
 
-                # Отправляем сигнал в основное окно
-                self.file_deleted.emit(video_path)
-
-                QMessageBox.information(self, "Успех", "Файл перемещен в корзину")
-
-            except ImportError:
-                # Если send2trash не установлен, используем обычное удаление
-                try:
-                    os.remove(video_path)
-                    self.deleted_files.add(video_path)
-                    self.update_after_deletion(video_index)
-                    self.file_deleted.emit(video_path)
-                    QMessageBox.information(self, "Успех", "Файл удален")
-                except Exception as e:
-                    QMessageBox.critical(self, "Ошибка", f"Не удалось удалить файл: {e}")
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось удалить файл: {e}")
+        # Если удаление прошло — аппдейтим UI и эмитим file_deleted чтобы основной код также отреагировал, если слушает
+        self.deleted_files.add(video_path)
+        self.update_after_deletion(video_index)
+        self.file_deleted.emit(video_path)
+        QMessageBox.information(self, "Успех", "Файл удалён (fallback)")
+        return
 
     def update_after_deletion(self, video_index):
         """Обновляет интерфейс после удаления файла"""
@@ -288,15 +363,16 @@ class ComparisonDialog(QDialog):
             self.file_infos[video_index].setPlainText(
                 f"❌ ФАЙЛ УДАЛЕН\n\n"
                 f"📁 Файл: {os.path.basename(self.video_paths[video_index])}\n"
-                f"🗑️ Статус: Перемещен в корзину"
+                f"🗑️ Статус: Перемещен/удалён"
             )
 
-        # Отключаем кнопку удаления
+        # Отключаем кнопку удаления (ищем QPushButton внутри панели)
         panel = self.left_panel if video_index == 0 else self.right_panel
-        delete_btn = panel.findChild(QPushButton)
-        if delete_btn:
-            delete_btn.setEnabled(False)
-            delete_btn.setText("🗑️ Файл удален")
+        # ищем первую кнопку в panel — это наша delete
+        for w in panel.findChildren(QPushButton):
+            # предположительно, это кнопка удаления; отключаем и меняем текст
+            w.setEnabled(False)
+            w.setText("🗑️ Файл удален")
 
     def create_control_buttons(self, layout):
         """Создает кнопки управления"""
@@ -323,7 +399,8 @@ class ComparisonDialog(QDialog):
     def extract_frames(self):
         """Запускает безопасное извлечение кадров"""
         from src.config import Config
-        self.extraction_thread = SafeFrameExtractionThread(self.video_paths, Config.DEFAULT_FRAMES_TO_COMPARE)
+        num = getattr(Config, "DEFAULT_FRAMES_TO_COMPARE", 10)
+        self.extraction_thread = SafeFrameExtractionThread(self.video_paths, num_frames=num)
         self.extraction_thread.progress_signal.connect(self.update_progress)
         self.extraction_thread.frames_extracted.connect(self.on_frames_extracted)
         self.extraction_thread.error_signal.connect(self.on_extraction_error)
@@ -341,8 +418,15 @@ class ComparisonDialog(QDialog):
 
     def on_frames_extracted(self, frames_data, frame_similarities):
         """Обрабатывает извлеченные кадры"""
-        self.frames_data = frames_data
-        self.frame_similarities = frame_similarities
+        self.frames_data = frames_data or {}
+        self.frame_similarities = frame_similarities or []
+
+        # вычисляем доступное число кадров (максимум среди видео, либо 0)
+        try:
+            counts = [len(v) for v in self.frames_data.values()] if self.frames_data else []
+            self.max_frames = max(counts) if counts else 0
+        except Exception:
+            self.max_frames = 0
 
         self.progress_bar.setVisible(False)
         self.status_label.setText("Кадры успешно извлечены!")
@@ -350,12 +434,22 @@ class ComparisonDialog(QDialog):
         # Обновляем информацию о файлах
         self.update_file_info()
 
-        # Активируем кнопки
-        self.prev_btn.setEnabled(True)
-        self.next_btn.setEnabled(True)
+        # Активируем кнопки (если есть хотя бы 1 кадр)
+        enabled = self.max_frames > 0
+        self.prev_btn.setEnabled(enabled)
+        self.next_btn.setEnabled(enabled)
 
-        # Показываем первый кадр
-        self.show_frame(0)
+        # Показываем первый кадр, если есть
+        if enabled:
+            self.show_frame(0)
+        else:
+            # нет кадров — покажем информативное сообщение
+            for label in self.frame_labels:
+                if label:
+                    label.setText("Кадры не найдены")
+            for info in self.similarity_labels:
+                if info:
+                    info.setText("Схожесть: ---")
 
         # Принудительная очистка памяти
         gc.collect()
@@ -369,8 +463,9 @@ class ComparisonDialog(QDialog):
             if video_path in self.frames_data and i < len(self.file_infos):
                 try:
                     # Получаем метаданные
-                    video_info = extractor.get_video_info(video_path)
-                    file_size = os.path.getsize(video_path) / (1024 * 1024)  # MB
+                    target = self._normalize_local_path(video_path)
+                    video_info = extractor.get_video_info(target)
+                    file_size = os.path.getsize(target) / (1024 * 1024)  # MB
 
                     info_text = f"""📁 Файл: {os.path.basename(video_path)}
 📏 Размер: {file_size:.2f} MB
@@ -390,31 +485,30 @@ class ComparisonDialog(QDialog):
         try:
             self.current_frame_index = frame_index
 
-            # Обновляем информацию о кадре
-            max_frames = min([len(frames) for frames in self.frames_data.values()])
-            frame_info = f"Кадр: {frame_index + 1}/{max_frames}"
+            max_frames = getattr(self, 'max_frames', 0)
+            frame_info = f"Кадр: {frame_index + 1}/{max_frames}" if max_frames > 0 else "Кадр: 0/0"
 
             for i in range(len(self.video_paths)):
                 if i < len(self.frame_info_labels) and self.frame_info_labels[i]:
                     self.frame_info_labels[i].setText(frame_info)
 
-            # Обновляем схожесть
-            if (frame_index < len(self.frame_similarities) and
-                    hasattr(self, 'similarity_labels')):
-
+            # Обновляем схожесть (если доступна)
+            if (frame_index < len(self.frame_similarities) and hasattr(self, 'similarity_labels')):
                 similarity = self.frame_similarities[frame_index]
                 similarity_text = f"Схожесть: {similarity:.1%}"
+            else:
+                similarity_text = "Схожесть: ---"
 
-                for label in self.similarity_labels:
-                    if label:
-                        label.setText(similarity_text)
+            for label in self.similarity_labels:
+                if label:
+                    label.setText(similarity_text)
 
-            # Отображаем кадры
+            # Отображаем кадры (защищённо)
             for i, video_path in enumerate(self.video_paths):
-                if (video_path in self.frames_data and
-                        frame_index < len(self.frames_data[video_path]) and
-                        i < len(self.frame_labels)):
+                frame = None
+                if video_path in self.frames_data and frame_index < len(self.frames_data.get(video_path, [])):
                     frame = self.frames_data[video_path][frame_index]
+                if i < len(self.frame_labels):
                     self.safe_display_frame(frame, self.frame_labels[i])
 
         except Exception as e:
@@ -463,7 +557,7 @@ class ComparisonDialog(QDialog):
 
     def next_frame(self):
         """Следующий кадр"""
-        max_frames = min([len(frames) for frames in self.frames_data.values()])
+        max_frames = min([len(frames) for frames in self.frames_data.values()]) if self.frames_data else 0
         if self.current_frame_index < max_frames - 1:
             self.show_frame(self.current_frame_index + 1)
 
