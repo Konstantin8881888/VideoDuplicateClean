@@ -1,3236 +1,0 @@
-__init__.py
-
-
-
-
-__main__.py
-
-"""
-VideoDuplicate Cleaner - Main Entry Point
-"""
-import sys
-import os
-
-# Добавляем текущую директорию в путь для импортов
-sys.path.insert(0, os.path.dirname(__file__))
-
-from core.file_scanner import FileScanner
-from core.frame_extractor import FrameExtractor
-from core.video_comparator import VideoComparator
-
-
-def main():
-    print("VideoDuplicate Cleaner - Консольная версия")
-    print("=" * 50)
-
-    scanner = FileScanner()
-    extractor = FrameExtractor()
-    comparator = VideoComparator()
-
-    while True:
-        print("\nВыберите действие:")
-        print("1 - Найти видеофайлы в папке")
-        print("2 - Сравнить два видеофайла")
-        print("3 - Найти похожие видео в папке")
-        print("q - Выход")
-
-        choice = input("Ваш выбор: ").strip()
-
-        if choice == '1':
-            folder = input("Введите путь к папке: ").strip('"\'')
-            if os.path.exists(folder):
-                videos = scanner.find_video_files(folder)
-                print(f"Найдено видеофайлов: {len(videos)}")
-                for video in videos:
-                    print(f"  - {video}")
-            else:
-                print("Папка не найдена!")
-
-        elif choice == '2':
-            video1 = input("Введите путь к первому видео: ").strip('"\'')
-            video2 = input("Введите путь ко второму видео: ").strip('"\'')
-
-            if os.path.exists(video1) and os.path.exists(video2):
-                result = comparator.compare_videos(video1, video2)
-                print(f"Схожесть: {result['similarity']:.2%}")
-            else:
-                print("Один из файлов не найден!")
-
-        elif choice == '3':
-            folder = input("Введите путь к папке: ").strip('"\'')
-            threshold = float(input("Порог схожести (0.1-1.0): ") or "0.7")
-
-            if os.path.exists(folder):
-                videos = scanner.find_video_files(folder)
-                similar_pairs = comparator.find_similar_videos(videos, threshold)
-
-                print(f"Найдено похожих пар: {len(similar_pairs)}")
-                for video1, video2, similarity, _ in similar_pairs:
-                    print(f"  {os.path.basename(video1)} <-> {os.path.basename(video2)}: {similarity:.2%}")
-            else:
-                print("Папка не найдена!")
-
-        elif choice.lower() == 'q':
-            print("До свидания!")
-            break
-        else:
-            print("Неверный выбор!")
-
-
-if __name__ == "__main__":
-    main()
-
-
-main.py
-
-import sys
-import os
-import time
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
-    QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox
-)
-from PyQt6.QtCore import QThread, pyqtSignal, QUrl
-
-# Импорты наших модулей
-from core.file_scanner import FileScanner
-from core.frame_extractor import FrameExtractor
-from core.optimized_comparator import OptimizedVideoComparator
-
-
-# =============================================================================
-# КЛАССЫ ДЛЯ МНОГОПОТОЧНОСТИ
-# =============================================================================
-
-class OptimizedScanThread(QThread):
-    """Поток для оптимизированного сканирования папки"""
-
-    # Сигналы для обновления UI из потока
-    progress_signal = pyqtSignal(int, str)  # прогресс (проценты, сообщение)
-    result_signal = pyqtSignal(list)  # финальные результаты
-    finished_signal = pyqtSignal()  # завершение работы
-
-    def __init__(self, comparator, folder_path, similarity_threshold=0.7):
-        super().__init__()
-        self.comparator = comparator
-        self.folder_path = folder_path
-        self.similarity_threshold = similarity_threshold
-        self.scanner = FileScanner()
-
-    def run(self):
-        """Основной метод, который выполняется в потоке"""
-        try:
-            self.progress_signal.emit(0, "Поиск видеофайлов...")
-
-            # Находим все видеофайлы
-            video_files = self.scanner.find_video_files(self.folder_path)
-
-            if not video_files:
-                self.result_signal.emit([])
-                return
-
-            self.progress_signal.emit(10, f"Найдено {len(video_files)} видеофайлов")
-
-            # Запускаем оптимизированный поиск похожих видео
-            similar_pairs = self.comparator.find_similar_videos_optimized(
-                video_files,
-                self.similarity_threshold
-            )
-
-            # Отправляем результаты в основной поток
-            self.result_signal.emit(similar_pairs)
-
-        except Exception as e:
-            print(f"Ошибка в потоке сканирования: {e}")
-        finally:
-            self.finished_signal.emit()
-
-
-class CompareThread(QThread):
-    """Поток для сравнения двух конкретных видеофайлов"""
-
-    result_signal = pyqtSignal(dict)
-
-    def __init__(self, comparator, video1_path, video2_path):
-        super().__init__()
-        self.comparator = comparator
-        self.video1_path = video1_path
-        self.video2_path = video2_path
-
-    def run(self):
-        result = self.comparator.compare_videos(self.video1_path, self.video2_path)
-        self.result_signal.emit(result)
-
-
-# =============================================================================
-# ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
-# =============================================================================
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 900, 700)
-
-        # Инициализация компонентов
-        self.scanner = FileScanner()
-        self.frame_extractor = FrameExtractor()
-        self.comparator = OptimizedVideoComparator()  # Используем оптимизированную версию
-
-        # Переменные состояния
-        self.selected_folder = ""
-        self.video1_path = ""
-        self.video2_path = ""
-        self.current_groups = []
-        self.optimized_scan_thread = None
-        self.compare_thread = None
-
-        # Создаем интерфейс
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Создает весь пользовательский интерфейс"""
-        # Создаем вкладки
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-
-        # Создаем и добавляем вкладки
-        self.scan_tab = self.create_scan_tab()
-        self.compare_tab = self.create_compare_tab()
-
-        self.tabs.addTab(self.scan_tab, "📁 Сканирование папки")
-        self.tabs.addTab(self.compare_tab, "🔍 Сравнение видео")
-
-    def create_scan_tab(self):
-        """Создает вкладку для сканирования папки"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-        widget.setLayout(layout)
-
-        # Заголовок
-        title_label = QLabel("Поиск похожих видеофайлов в папке")
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
-        layout.addWidget(title_label)
-
-        # Выбор папки
-        folder_layout = QHBoxLayout()
-        self.select_button = QPushButton("Выбрать папку для сканирования")
-        self.select_button.clicked.connect(self.select_folder)
-        folder_layout.addWidget(self.select_button)
-
-        self.selected_folder_label = QLabel("Папка не выбрана")
-        folder_layout.addWidget(self.selected_folder_label)
-        layout.addLayout(folder_layout)
-
-        # Настройки сканирования
-        settings_layout = QHBoxLayout()
-
-        settings_layout.addWidget(QLabel("Порог схожести:"))
-        self.similarity_threshold_input = QLineEdit("0.7")
-        self.similarity_threshold_input.setMaximumWidth(50)
-        settings_layout.addWidget(self.similarity_threshold_input)
-
-        settings_layout.addWidget(QLabel("(0.1 - 1.0, где 1.0 = идентичные)"))
-        settings_layout.addStretch()
-        layout.addLayout(settings_layout)
-
-        # Кнопка запуска сканирования
-        self.scan_button = QPushButton("🚀 Начать оптимизированное сканирование")
-        self.scan_button.clicked.connect(self.start_optimized_scan)
-        self.scan_button.setStyleSheet("QPushButton { font-weight: bold; padding: 8px; }")
-        layout.addWidget(self.scan_button)
-
-        # Прогресс-бар
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        # Поле для логов и результатов
-        self.log_text = QTextEdit()
-        self.log_text.setPlaceholderText(
-            "Здесь будут отображаться процесс сканирования и результаты...\n\n"
-            "Оптимизированный алгоритм:\n"
-            "• Сначала ищет точные дубликаты по хэшам\n"
-            "• Фильтрует по метаданным (размер, длительность)\n"
-            "• Только затем делает глубокий анализ кадров"
-        )
-        self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text)
-
-        # Кнопки для групп (будем создавать динамически)
-        self.groups_layout = QVBoxLayout()
-        layout.addLayout(self.groups_layout)
-
-        # Статусная строка
-        self.status_label = QLabel("Готов к работе")
-        layout.addWidget(self.status_label)
-
-        return widget
-
-    def create_compare_tab(self):
-        """Создает вкладку для сравнения двух видео"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-        widget.setLayout(layout)
-
-        # Заголовок
-        title_label = QLabel("Сравнение двух видеофайлов")
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
-        layout.addWidget(title_label)
-
-        # Выбор первого видео
-        video1_layout = QHBoxLayout()
-        self.select_video1_btn = QPushButton("Выбрать первое видео")
-        self.select_video1_btn.clicked.connect(lambda: self.select_video_for_comparison(1))
-        video1_layout.addWidget(self.select_video1_btn)
-
-        self.video1_label = QLabel("Видео не выбрано")
-        video1_layout.addWidget(self.video1_label)
-        layout.addLayout(video1_layout)
-
-        # Выбор второго видео
-        video2_layout = QHBoxLayout()
-        self.select_video2_btn = QPushButton("Выбрать второе видео")
-        self.select_video2_btn.clicked.connect(lambda: self.select_video_for_comparison(2))
-        video2_layout.addWidget(self.select_video2_btn)
-
-        self.video2_label = QLabel("Видео не выбрано")
-        video2_layout.addWidget(self.video2_label)
-        layout.addLayout(video2_layout)
-
-        # Кнопка сравнения
-        self.compare_btn = QPushButton("🔍 Сравнить выбранные видео")
-        self.compare_btn.clicked.connect(self.compare_selected_videos)
-        layout.addWidget(self.compare_btn)
-
-        # Результаты сравнения
-        self.compare_results = QTextEdit()
-        self.compare_results.setPlaceholderText("Результаты сравнения появятся здесь...")
-        self.compare_results.setReadOnly(True)
-        layout.addWidget(self.compare_results)
-
-        return widget
-
-    # =============================================================================
-    # МЕТОДЫ ДЛЯ ВКЛАДКИ СКАНИРОВАНИЯ
-    # =============================================================================
-
-    def select_folder(self):
-        """Выбирает папку для сканирования"""
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-        if folder:
-            self.selected_folder = folder
-            self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
-            self.log_text.append(f"📁 Выбрана папка: {folder}")
-
-    def start_optimized_scan(self):
-        """Запускает оптимизированное сканирование папки"""
-        if not self.selected_folder:
-            self.show_warning("Сначала выберите папку для сканирования!")
-            return
-
-        # Получаем и проверяем порог схожести
-        try:
-            threshold = float(self.similarity_threshold_input.text())
-            if not (0.1 <= threshold <= 1.0):
-                raise ValueError("Порог должен быть между 0.1 и 1.0")
-        except ValueError as e:
-            self.show_warning(f"Некорректный порог схожести: {e}")
-            return
-
-        # Блокируем UI на время сканирования
-        self.set_scan_ui_enabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-
-        # Очищаем предыдущие кнопки групп
-        self.clear_group_buttons()
-
-        self.log_text.clear()
-        self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
-        self.log_text.append(f"📁 Папка: {self.selected_folder}")
-        self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
-        self.log_text.append("─" * 50)
-
-        # Запускаем сканирование в отдельном потоке
-        self.optimized_scan_thread = OptimizedScanThread(
-            self.comparator,
-            self.selected_folder,
-            threshold
-        )
-        self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
-        self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
-        self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
-        self.optimized_scan_thread.start()
-
-    def update_optimized_progress(self, value: int, message: str):
-        """Обновляет прогресс сканирования"""
-        self.progress_bar.setValue(value)
-        self.status_label.setText(message)
-        self.log_text.append(f"⚡ {message}")
-
-    def optimized_scan_finished(self, results: list):
-        """Обрабатывает результаты оптимизированного сканирования"""
-        self.log_text.append("\n" + "═" * 50)
-        self.log_text.append("✅ СКАНИРОВАНИЕ ЗАВЕРШЕНО!")
-
-        if not results:
-            self.log_text.append("❌ Похожих видеофайлов не найдено")
-            self.status_label.setText("Похожие видео не найдены")
-            return
-
-        # Группируем результаты для удобного отображения
-        groups = self._group_similar_videos(results)
-
-        self.log_text.append(f"📊 Найдено групп похожих видео: {len(groups)}")
-        self.log_text.append(f"📈 Всего пар: {len(results)}")
-        self.status_label.setText(f"Найдено {len(groups)} групп похожих видео")
-
-        # Сохраняем группы для последующего использования
-        self.current_groups = groups
-
-        # Показываем группы с вычислением средней схожести
-        for i, group in enumerate(groups, 1):
-            # Вычисляем среднюю схожесть для группы
-            total_similarity = 0
-            for video_path, similarity in group:
-                total_similarity += similarity
-            avg_similarity = total_similarity / len(group) if group else 0
-
-            self.log_text.append(f"\n🎬 ГРУППА {i} ({len(group)} видео, средняя схожесть: {avg_similarity:.1%}):")
-
-            for video_path, similarity in group:
-                file_size = os.path.getsize(video_path) / (1024 * 1024)  # в MB
-                self.log_text.append(
-                    f"   📹 {os.path.basename(video_path)} ({file_size:.1f} MB, схожесть: {similarity:.1%})")
-
-        # Создаем кнопки для сравнения групп с указанием средней схожести
-        self.create_group_buttons(groups)
-
-    def create_group_buttons(self, groups):
-        """Создает кнопки для сравнения групп с указанием процента схожести"""
-        for i, group in enumerate(groups, 1):
-            # Вычисляем среднюю схожесть для группы
-            total_similarity = 0
-            for video_path, similarity in group:
-                total_similarity += similarity
-            avg_similarity = total_similarity / len(group) if group else 0
-
-            compare_btn = QPushButton(f"🔍 Сравнить группу {i} (схожесть: {avg_similarity:.1%})")
-            compare_btn.clicked.connect(lambda checked, idx=i - 1: self.open_group_comparison(idx))
-            self.groups_layout.addWidget(compare_btn)
-
-    def clear_group_buttons(self):
-        """Очищает кнопки групп"""
-        # Удаляем все кнопки из layout
-        for i in reversed(range(self.groups_layout.count())):
-            widget = self.groups_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def open_group_comparison(self, group_index):
-        """Открывает сравнение для выбранной группы"""
-        if 0 <= group_index < len(self.current_groups):
-            group = self.current_groups[group_index]
-            video_paths = [video_path for video_path, similarity in group]
-
-            if len(video_paths) >= 2:
-                self.open_comparison_dialog(video_paths)
-            else:
-                self.show_warning("В группе должно быть как минимум 2 видео для сравнения")
-        else:
-            self.show_warning("Группа не найдена")
-
-    def open_comparison_dialog(self, video_paths):
-        """Открывает диалог для side-by-side сравнения видео"""
-        if len(video_paths) < 2:
-            self.show_warning("Для сравнения нужно как минимум 2 видеофайла!")
-            return
-
-        try:
-            # Пробуем открыть полную версию
-            from src.gui.comparison_dialog import ComparisonDialog
-            dialog = ComparisonDialog(video_paths, self)
-            dialog.exec()
-        except Exception as e:
-            print(f"Ошибка при открытии полной версии сравнения: {e}")
-            # Если полная версия не работает, используем безопасную
-            try:
-                from src.gui.safe_comparison_dialog import SafeComparisonDialog
-                self.log_text.append("⚠️ Используем безопасный режим сравнения")
-                dialog = SafeComparisonDialog(video_paths, self)
-                dialog.exec()
-            except Exception as e2:
-                self.show_warning(f"Не удалось открыть сравнение: {e2}")
-
-    def show_simple_comparison(self, video_paths):
-        """Показывает упрощенное сравнение если основной диалог не работает"""
-        info = "Side-by-Side сравнение\n\n"
-        info += "Сравниваемые файлы:\n"
-        for i, path in enumerate(video_paths[:2]):  # Берем только первые 2
-            if os.path.exists(path):
-                size = os.path.getsize(path) / (1024 * 1024)
-                info += f"\n{i + 1}. {os.path.basename(path)}\n"
-                info += f"   Размер: {size:.2f} MB\n"
-                info += f"   Путь: {path}\n"
-            else:
-                info += f"\n{i + 1}. ФАЙЛ НЕ НАЙДЕН: {path}\n"
-
-        self.log_text.append(f"\n🔍 СРАВНЕНИЕ ГРУППЫ:\n{info}")
-
-    def scan_thread_finished(self):
-        """Вызывается когда поток сканирования завершил работу"""
-        self.set_scan_ui_enabled(True)
-        self.progress_bar.setVisible(False)
-
-    def _group_similar_videos(self, results: list) -> list:
-        """Группирует похожие видео в логические группы"""
-        groups = []
-        used_videos = set()
-
-        for video1, video2, similarity, _ in results:
-            # Если оба видео уже в группах, пропускаем
-            if video1 in used_videos and video2 in used_videos:
-                continue
-
-            # Ищем существующую группу для одного из видео
-            found_group = None
-            for group in groups:
-                group_videos = [v[0] for v in group]
-                if video1 in group_videos or video2 in group_videos:
-                    found_group = group
-                    break
-
-            # Если группы нет, создаем новую
-            if found_group is None:
-                found_group = []
-                groups.append(found_group)
-
-            # Добавляем видео в группу если их там еще нет
-            if video1 not in used_videos:
-                found_group.append((video1, similarity))
-                used_videos.add(video1)
-
-            if video2 not in used_videos:
-                found_group.append((video2, similarity))
-                used_videos.add(video2)
-
-        return groups
-
-    # =============================================================================
-    # МЕТОДЫ ДЛЯ ВКЛАДКИ СРАВНЕНИЯ
-    # =============================================================================
-
-    def select_video_for_comparison(self, video_num: int):
-        """Выбирает видеофайл для сравнения"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Выберите видео файл #{video_num}",
-            "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv)"
-        )
-
-        if file_path:
-            if video_num == 1:
-                self.video1_path = file_path
-                self.video1_label.setText(f"Выбрано: {os.path.basename(file_path)}")
-            else:
-                self.video2_path = file_path
-                self.video2_label.setText(f"Выбрано: {os.path.basename(file_path)}")
-
-    def compare_selected_videos(self):
-        """Сравнивает два выбранных видеофайла"""
-        if not self.video1_path or not self.video2_path:
-            self.show_warning("Выберите оба видеофайла для сравнения!")
-            return
-
-        self.compare_results.clear()
-        self.compare_results.append("🔄 Начинаем сравнение...")
-
-        # Запускаем сравнение в отдельном потоке
-        self.compare_thread = CompareThread(self.comparator, self.video1_path, self.video2_path)
-        self.compare_thread.result_signal.connect(self.show_comparison_result)
-        self.compare_thread.start()
-
-    def show_comparison_result(self, result: dict):
-        """Показывает результаты сравнения двух видео"""
-        self.compare_results.append("\n📊 РЕЗУЛЬТАТЫ СРАВНЕНИЯ:")
-        self.compare_results.append(f"🎯 Общая схожесть: {result['similarity']:.2%}")
-
-        if 'error' in result:
-            self.compare_results.append(f"❌ Ошибка: {result['error']}")
-            return
-
-        # Показываем детали по каждому сравнению кадров
-        for i, comparison in enumerate(result['frame_comparisons'], 1):
-            self.compare_results.append(f"\n🔍 Сравнение кадров #{i}:")
-            self.compare_results.append(f"   Общая схожесть: {comparison['similarity']:.2%}")
-
-            # Детали по каждому алгоритму
-            for algo_name, algo_score in comparison['algorithm_details'].items():
-                if algo_name != 'overall':
-                    self.compare_results.append(f"   - {algo_name}: {algo_score:.2%}")
-
-    # =============================================================================
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-    # =============================================================================
-
-    def set_scan_ui_enabled(self, enabled: bool):
-        """Включает/выключает элементы UI во время сканирования"""
-        self.scan_button.setEnabled(enabled)
-        self.select_button.setEnabled(enabled)
-        self.similarity_threshold_input.setEnabled(enabled)
-
-    def show_warning(self, message: str):
-        """Показывает предупреждающее сообщение"""
-        QMessageBox.warning(self, "Внимание", message)
-
-    def refresh_file_list(self):
-        """Обновляет список файлов (например, после удаления)"""
-        self.log_text.append("\n🔄 Список файлов обновлен")
-
-    def closeEvent(self, event):
-        """Обрабатывает закрытие приложения"""
-        # Останавливаем потоки если они работают
-        if self.optimized_scan_thread and self.optimized_scan_thread.isRunning():
-            self.optimized_scan_thread.terminate()
-            self.optimized_scan_thread.wait()
-
-        if self.compare_thread and self.compare_thread.isRunning():
-            self.compare_thread.terminate()
-            self.compare_thread.wait()
-
-        event.accept()
-
-
-# =============================================================================
-# ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
-# =============================================================================
-
-def main():
-    """Основная функция запуска приложения"""
-    # Создаем приложение
-    app = QApplication(sys.argv)
-    app.setApplicationName("VideoDuplicate Cleaner")
-    app.setApplicationVersion("1.0")
-
-    # Создаем и показываем главное окно
-    window = MainWindow()
-    window.show()
-
-    # Запускаем цикл событий
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
-
-
-algorithms\__init__.py
-
-from .base_comparator import BaseComparator
-from .histogram_comparator import HistogramComparator
-from .phash_comparator import PHashComparator
-from .comparison_manager import ComparisonManager
-
-__all__ = ['BaseComparator', 'HistogramComparator', 'PHashComparator', 'ComparisonManager']
-
-
-algorithms\base_comparator.py
-
-import cv2
-import numpy as np
-from abc import ABC, abstractmethod
-from typing import Dict, Any
-
-
-class BaseComparator(ABC):
-    """Базовый класс для всех алгоритмов сравнения изображений"""
-
-    def __init__(self, name: str, weight: float = 1.0):
-        self.name = name
-        self.weight = weight
-
-    @abstractmethod
-    def compare(self, image1: np.ndarray, image2: np.ndarray) -> float:
-        """
-        Сравнивает два изображения и возвращает оценку схожести (0-1)
-        где 1 - идентичные, 0 - совершенно разные
-        """
-        pass
-
-    def normalize_image(self, image: np.ndarray, target_size: tuple = (256, 256)) -> np.ndarray:
-        """Нормализует изображение к стандартному размеру"""
-        if len(image.shape) == 3:
-            # Цветное изображение
-            return cv2.resize(image, target_size)
-        else:
-            # ЧБ изображение
-            return cv2.resize(image, target_size)
-
-
-algorithms\comparison_manager.py
-
-from typing import List, Dict
-import numpy as np
-from .base_comparator import BaseComparator
-from .histogram_comparator import HistogramComparator
-from .phash_comparator import PHashComparator
-
-
-class ComparisonManager:
-    """Управляет всеми алгоритмами сравнения и агрегирует результаты"""
-
-    def __init__(self):
-        self.comparators: List[BaseComparator] = []
-        self.setup_comparators()
-
-    def setup_comparators(self):
-        """Настраивает компараторы с весами по умолчанию"""
-        # Веса можно будет настраивать через UI позже
-        self.comparators = [
-            HistogramComparator(weight=0.4),  # 40%
-            PHashComparator(weight=0.6)  # 60%
-        ]
-
-    def compare_images(self, image1: np.ndarray, image2: np.ndarray) -> Dict[str, float]:
-        """
-        Сравнивает два изображения всеми доступными алгоритмами
-        Возвращает словарь с результатами каждого алгоритма и общим счетом
-        """
-        results = {}
-        total_score = 0.0
-        total_weight = 0.0
-
-        for comparator in self.comparators:
-            try:
-                score = comparator.compare(image1, image2)
-                results[comparator.name] = score
-                total_score += score * comparator.weight
-                total_weight += comparator.weight
-            except Exception as e:
-                print(f"Ошибка в компараторе {comparator.name}: {e}")
-                results[comparator.name] = 0.0
-
-        # Вычисляем общий взвешенный счет
-        if total_weight > 0:
-            results['overall'] = total_score / total_weight
-        else:
-            results['overall'] = 0.0
-
-        return results
-
-    def get_comparator_names(self) -> List[str]:
-        """Возвращает список имен всех компараторов"""
-        return [comp.name for comp in self.comparators]
-
-    def set_weights(self, weights: Dict[str, float]):
-        """Устанавливает веса для компараторов"""
-        for comp in self.comparators:
-            if comp.name in weights:
-                comp.weight = weights[comp.name]
-
-
-algorithms\histogram_comparator.py
-
-import cv2
-import numpy as np
-from .base_comparator import BaseComparator
-
-
-class HistogramComparator(BaseComparator):
-    """Сравнивает изображения с помощью гистограмм в HSV пространстве"""
-
-    def __init__(self, weight: float = 1.0):
-        super().__init__("Histogram", weight)
-        # Параметры для вычисления гистограмм
-        self.h_bins = 50
-        self.s_bins = 50
-        self.hist_size = [self.h_bins, self.s_bins]
-        self.ranges = [0, 180, 0, 256]  # HSV диапазоны
-
-    def compare(self, image1: np.ndarray, image2: np.ndarray) -> float:
-        """
-        Сравнивает два изображения с помощью гистограмм HSV
-        Возвращает оценку схожести от 0 до 1
-        """
-        try:
-            # Нормализуем размер изображений
-            image1_norm = self.normalize_image(image1)
-            image2_norm = self.normalize_image(image2)
-
-            # Конвертируем в HSV
-            hsv1 = cv2.cvtColor(image1_norm, cv2.COLOR_BGR2HSV)
-            hsv2 = cv2.cvtColor(image2_norm, cv2.COLOR_BGR2HSV)
-
-            # Вычисляем гистограммы для каналов H и S
-            hist1 = cv2.calcHist([hsv1], [0, 1], None, self.hist_size, self.ranges)
-            hist2 = cv2.calcHist([hsv2], [0, 1], None, self.hist_size, self.ranges)
-
-            # Нормализуем гистограммы
-            cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
-            cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
-
-            # Сравниваем гистограммы методом корреляции
-            similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
-
-            # Преобразуем в диапазон 0-1 (корреляция может быть от -1 до 1)
-            return max(0.0, (similarity + 1) / 2)
-
-        except Exception as e:
-            print(f"Ошибка в HistogramComparator: {e}")
-            return 0.0
-
-
-algorithms\phash_comparator.py
-
-import cv2
-import numpy as np
-from .base_comparator import BaseComparator
-
-
-class PHashComparator(BaseComparator):
-    """Сравнивает изображения с помощью perceptual hashing (pHash)"""
-
-    def __init__(self, weight: float = 1.0, hash_size: int = 16):
-        super().__init__("Perceptual Hash", weight)
-        self.hash_size = hash_size
-
-    def _compute_phash(self, image: np.ndarray) -> str:
-        """Вычисляет perceptual hash для изображения"""
-        try:
-            # Нормализуем размер
-            resized = self.normalize_image(image, (self.hash_size, self.hash_size))
-
-            # Конвертируем в grayscale если нужно
-            if len(resized.shape) == 3:
-                gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = resized
-
-            # Вычисляем DCT (Discrete Cosine Transform)
-            dct = cv2.dct(np.float32(gray))
-
-            # Берем верхний левый квадрат 8x8 (игнорируем низкочастотные компоненты)
-            dct_roi = dct[:8, :8]
-
-            # Вычисляем среднее значение (игнорируя первый элемент)
-            mean_val = np.mean(dct_roi[1:, 1:])
-
-            # Создаем хэш: 1 если значение > среднего, 0 иначе
-            hash_array = dct_roi > mean_val
-            hash_str = ''.join(['1' if bit else '0' for row in hash_array for bit in row])
-
-            return hash_str
-
-        except Exception as e:
-            print(f"Ошибка при вычислении pHash: {e}")
-            return ""
-
-    def compare(self, image1: np.ndarray, image2: np.ndarray) -> float:
-        """Сравнивает два изображения с помощью pHash"""
-        try:
-            hash1 = self._compute_phash(image1)
-            hash2 = self._compute_phash(image2)
-
-            if not hash1 or not hash2 or len(hash1) != len(hash2):
-                return 0.0
-
-            # Вычисляем расстояние Хэмминга
-            hamming_distance = sum(c1 != c2 for c1, c2 in zip(hash1, hash2))
-
-            # Преобразуем в схожесть (0-1)
-            max_distance = len(hash1)
-            similarity = 1.0 - (hamming_distance / max_distance)
-
-            return max(0.0, similarity)
-
-        except Exception as e:
-            print(f"Ошибка в PHashComparator: {e}")
-            return 0.0
-
-
-algorithms\__pycache__\__init__.cpython-313.pyc
-
-у
-    ¦i#  г                   у<   • S SK Jr  S SKJr  S SKJr  S SKJr  / SQrg)й   )ЪBaseComparator)ЪHistogramComparator)ЪPHashComparator)ЪComparisonManager)r   r   r   r   N)	Ъbase_comparatorr   Ъhistogram_comparatorr   Ъphash_comparatorr   Ъcomparison_managerr   Ъ__all__© у    ЪJF:\Programs\PythonProject\VideoDuplicateCleaner\src\algorithms\__init__.pyЪ<module>r      s   рЭ +Э 5Э -Э 1в
-[Ѓr   
-
-
-algorithms\__pycache__\base_comparator.cpython-313.pyc
-
-ó
-    gi|  ã                   óJ    S SK r S SKrS SKJrJr  S SKJrJr   " S S\5      r	g)é    N)ÚABCÚabstractmethod)ÚDictÚAnyc                   ó¸    \ rS rSrSrSS\S\4S jjr\S\	R                  S\	R                  S\4S	 j5       rSS
-\	R                  S\S\	R                  4S jjrSrg)ÚBaseComparatoré   uh   ÐÐ°Ð·Ð¾Ð²ÑÐ¹ ÐºÐ»Ð°ÑÑ Ð´Ð»Ñ Ð²ÑÐµÑ Ð°Ð»Ð³Ð¾ÑÐ¸ÑÐ¼Ð¾Ð² ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ñ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ð¹ÚnameÚweightc                 ó    Xl         X l        g )N©r
-   r   )Úselfr
-   r   s      ÚQF:\Programs\PythonProject\VideoDuplicateCleaner\src\algorithms\base_comparator.pyÚ__init__ÚBaseComparator.__init__
-   s    Ø	Øó    Úimage1Úimage2Úreturnc                 ó    g)u·   
-Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ð¸ Ð²Ð¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ Ð¾ÑÐµÐ½ÐºÑ ÑÑÐ¾Ð¶ÐµÑÑÐ¸ (0-1)
-Ð³Ð´Ðµ 1 - Ð¸Ð´ÐµÐ½ÑÐ¸ÑÐ½ÑÐµ, 0 - ÑÐ¾Ð²ÐµÑÑÐµÐ½Ð½Ð¾ ÑÐ°Ð·Ð½ÑÐµ
-N© )r   r   r   s      r   ÚcompareÚBaseComparator.compare   s    ð 	r   ÚimageÚtarget_sizec                 ó    [        UR                  5      S:X  a  [        R                  " X5      $ [        R                  " X5      $ )uX   ÐÐ¾ÑÐ¼Ð°Ð»Ð¸Ð·ÑÐµÑ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ðµ Ðº ÑÑÐ°Ð½Ð´Ð°ÑÑÐ½Ð¾Ð¼Ñ ÑÐ°Ð·Ð¼ÐµÑÑé   )ÚlenÚshapeÚcv2Úresize)r   r   r   s      r   Únormalize_imageÚBaseComparator.normalize_image   s3    äu{{ÓqÓ ä::eÓ1Ð1ô ::eÓ1Ð1r   r   N)g      ð?))é   r$   )Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__ÚstrÚfloatr   r   ÚnpÚndarrayr   Útupler"   Ú__static_attributes__r   r   r   r   r      ss    ÙrñSð ¨%õ ð ðbjjð °"·*±*ð Àó ó ðñ2 R§Z¡Zð 2¸eð 2ÐUW×U_ÑU_÷ 2ð 2r   r   )
-r    Únumpyr,   Úabcr   r   Útypingr   r   r   r   r   r   Ú<module>r3      s   ðÛ 
-Û ß #ß ô2Sõ 2r   
-
-
-algorithms\__pycache__\comparison_manager.cpython-313.pyc
-
-ó
-    gi	  ã                   óT    S SK JrJr  S SKrSSKJr  SSKJr  SSK	J
-r
-   " S S5      rg)	é    )ÚListÚDictNé   )ÚBaseComparator)ÚHistogramComparator)ÚPHashComparatorc                   ó    \ rS rSrSrS rS rS\R                  S\R                  S\	\
-\4   4S jrS\\
-   4S	 jrS
-\	\
-\4   4S jrSrg)ÚComparisonManageré   ut   Ð£Ð¿ÑÐ°Ð²Ð»ÑÐµÑ Ð²ÑÐµÐ¼Ð¸ Ð°Ð»Ð³Ð¾ÑÐ¸ÑÐ¼Ð°Ð¼Ð¸ ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ñ Ð¸ Ð°Ð³ÑÐµÐ³Ð¸ÑÑÐµÑ ÑÐµÐ·ÑÐ»ÑÑÐ°ÑÑc                 ó2    / U l         U R                  5         g )N)ÚcomparatorsÚsetup_comparators©Úselfs    ÚTF:\Programs\PythonProject\VideoDuplicateCleaner\src\algorithms\comparison_manager.pyÚ__init__ÚComparisonManager.__init__   s    Ø13ÔØ×ÑÕ ó    c                 ó2    [        SS9[        SS9/U l        g)uU   ÐÐ°ÑÑÑÐ°Ð¸Ð²Ð°ÐµÑ ÐºÐ¾Ð¼Ð¿Ð°ÑÐ°ÑÐ¾ÑÑ Ñ Ð²ÐµÑÐ°Ð¼Ð¸ Ð¿Ð¾ ÑÐ¼Ð¾Ð»ÑÐ°Ð½Ð¸ÑgÙ?)Úweightg333333ã?N)r   r   r   r   s    r   r   Ú#ComparisonManager.setup_comparators   s    ô   sÑ+Ü 3Ñ'ð
-Õr   Úimage1Úimage2Úreturnc                 ó`   0 nSnSnU R                    HB  n UR                  X5      nXsUR                  '   XGUR                  -  -  nXVR                  -  nMD     US:  a	  XE-  US'   U$ SUS'   U$ ! [         a4  n[        SUR                   SU 35        SX6R                  '    SnAM  SnAff = f)uè   
-Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ð²ÑÐµÐ¼Ð¸ Ð´Ð¾ÑÑÑÐ¿Ð½ÑÐ¼Ð¸ Ð°Ð»Ð³Ð¾ÑÐ¸ÑÐ¼Ð°Ð¼Ð¸
-ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ»Ð¾Ð²Ð°ÑÑ Ñ ÑÐµÐ·ÑÐ»ÑÑÐ°ÑÐ°Ð¼Ð¸ ÐºÐ°Ð¶Ð´Ð¾Ð³Ð¾ Ð°Ð»Ð³Ð¾ÑÐ¸ÑÐ¼Ð° Ð¸ Ð¾Ð±ÑÐ¸Ð¼ ÑÑÐµÑÐ¾Ð¼
-g        u'   ÐÑÐ¸Ð±ÐºÐ° Ð² ÐºÐ¾Ð¼Ð¿Ð°ÑÐ°ÑÐ¾ÑÐµ z: Nr   Úoverall)r   ÚcompareÚnamer   Ú	ExceptionÚprint)	r   r   r   ÚresultsÚtotal_scoreÚtotal_weightÚ
-comparatorÚscoreÚes	            r   Úcompare_imagesÚ ComparisonManager.compare_images   sÐ    ð
- ØØà×*Ô*Jð/Ø"×*Ñ*¨6Ó:Ø+0
-Ñ(Ø z×'8Ñ'8Ñ8Ñ8Ø× 1Ñ 1Ñ1ñ +ð !ÓØ!,Ñ!;GIÑð ð "%GIÑàøô ó /ÜÐ?À
-ÇÁÐ?PÐPRÐSTÐRUÐVÔWØ+.×(ûð/ús   >A/Á/
-B-Á9)B(Â(B-c                 óX    U R                    Vs/ s H  oR                  PM     sn$ s  snf )uL   ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ¿Ð¸ÑÐ¾Ðº Ð¸Ð¼ÐµÐ½ Ð²ÑÐµÑ ÐºÐ¾Ð¼Ð¿Ð°ÑÐ°ÑÐ¾ÑÐ¾Ð²)r   r   )r   Úcomps     r   Úget_comparator_namesÚ&ComparisonManager.get_comparator_names2   s$    à&*×&6Ò&6Ó7Ò&6d		Ñ&6Ñ7Ð7ùÒ7s   'Úweightsc                 ót    U R                    H(  nUR                  U;   d  M  XR                     Ul        M*     g)uC   Ð£ÑÑÐ°Ð½Ð°Ð²Ð»Ð¸Ð²Ð°ÐµÑ Ð²ÐµÑÐ° Ð´Ð»Ñ ÐºÐ¾Ð¼Ð¿Ð°ÑÐ°ÑÐ¾ÑÐ¾Ð²N)r   r   r   )r   r-   r*   s      r   Úset_weightsÚComparisonManager.set_weights6   s,    à×$Ô$DØyyGÕ#Ø%§i¡iÑ0ò %r   )r   N)Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__r   r   ÚnpÚndarrayr   ÚstrÚfloatr'   r   r+   r/   Ú__static_attributes__© r   r   r
-   r
-      s`    Ù~ò!ò
-ð R§Z¡Zð ¸¿¹ð ÈÈSÐRWÈZÑHXô ð68 d¨3¡iô 8ð1 4¨¨U¨
-Ñ#3÷ 1r   r
-   )Útypingr   r   Únumpyr6   Úbase_comparatorr   Úhistogram_comparatorr   Úphash_comparatorr   r
-   r;   r   r   Ú<module>rA      s   ðß Û Ý +Ý 5Ý -÷21ò 21r   
-
-
-algorithms\__pycache__\histogram_comparator.cpython-313.pyc
-
-ó
-    ix  ã                   ó6    S SK r S SKrSSKJr   " S S\5      rg)é    Né   )ÚBaseComparatorc                   óv   ^  \ rS rSrSrS
-S\4U 4S jjjrS\R                  S\R                  S\4S jr	S	r
-U =r$ )ÚHistogramComparatoré   ur   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ñ Ð¿Ð¾Ð¼Ð¾ÑÑÑ Ð³Ð¸ÑÑÐ¾Ð³ÑÐ°Ð¼Ð¼ Ð² HSV Ð¿ÑÐ¾ÑÑÑÐ°Ð½ÑÑÐ²ÐµÚweightc                 ó   > [         TU ]  SU5        SU l        SU l        U R                  U R                  /U l        / SQU l        g )NÚ	Histogramé2   )r   é´   r   é   )ÚsuperÚ__init__Úh_binsÚs_binsÚ	hist_sizeÚranges)Úselfr   Ú	__class__s     ÚVF:\Programs\PythonProject\VideoDuplicateCleaner\src\algorithms\histogram_comparator.pyr   ÚHistogramComparator.__init__	   s;   ø ÜÑ fÔ-àØØ++ t§{¡{Ð3Ú&ó    Úimage1Úimage2Úreturnc                 óô    U R                  U5      nU R                  U5      n[        R                  " U[        R                  5      n[        R                  " U[        R                  5      n[        R                  " U/SS/SU R
-                  U R                  5      n[        R                  " U/SS/SU R
-                  U R                  5      n[        R                  " XwSS[        R                  5        [        R                  " XSS[        R                  5        [        R                  " Xx[        R                  5      n	[        SU	S-   S-  5      $ ! [         a  n
-[        SU
- 35         Sn
-A
-gSn
-A
-ff = f)u    
-Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ñ Ð¿Ð¾Ð¼Ð¾ÑÑÑ Ð³Ð¸ÑÑÐ¾Ð³ÑÐ°Ð¼Ð¼ HSV
-ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ Ð¾ÑÐµÐ½ÐºÑ ÑÑÐ¾Ð¶ÐµÑÑÐ¸ Ð¾Ñ 0 Ð´Ð¾ 1
-r   r   Ng        é   u%   ÐÑÐ¸Ð±ÐºÐ° Ð² HistogramComparator: )Únormalize_imageÚcv2ÚcvtColorÚCOLOR_BGR2HSVÚcalcHistr   r   Ú	normalizeÚNORM_MINMAXÚcompareHistÚHISTCMP_CORRELÚmaxÚ	ExceptionÚprint)r   r   r   Úimage1_normÚimage2_normÚhsv1Úhsv2Úhist1Úhist2Ú
-similarityÚes              r   ÚcompareÚHistogramComparator.compare   s    ð
-	à×.Ñ.¨vÓ6KØ×.Ñ.¨vÓ6Kô << ¬S×->Ñ->Ó?DÜ<< ¬S×->Ñ->Ó?Dô LL $ ¨!¨Q¨°°t·~±~ÀtÇ{Á{ÓSEÜLL $ ¨!¨Q¨°°t·~±~ÀtÇ{Á{ÓSEô MM%¨¨1¬c¯o©oÔ>ÜMM%¨¨1¬c¯o©oÔ>ô ¨´s×7IÑ7IÓJJô sZ¨!^¨qÑ0Ó1Ð1øäó 	ÜÐ9¸!¸Ð=Ô>Üûð	ús   EE Å
-E7ÅE2Å2E7)r   r   r   r   )g      ð?)Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__Úfloatr   ÚnpÚndarrayr2   Ú__static_attributes__Ú__classcell__)r   s   @r   r   r      s>   ø Ù|ñ'u÷ 'ð 'ðbjjð °"·*±*ð À÷ ò r   r   )r   Únumpyr:   Úbase_comparatorr   r   © r   r   Ú<module>rA      s   ðÛ 
-Û Ý +ô).õ )r   
-
-
-algorithms\__pycache__\phash_comparator.cpython-313.pyc
-
-ó
-    ?i;
-  ã                   ó6    S SK r S SKrSSKJr   " S S\5      rg)é    Né   )ÚBaseComparatorc                   ó    ^  \ rS rSrSrSS\S\4U 4S jjjrS\R                  S\
-4S jrS	\R                  S
-\R                  S\4S jrSrU =r$ )ÚPHashComparatoré   uX   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ñ Ð¿Ð¾Ð¼Ð¾ÑÑÑ perceptual hashing (pHash)ÚweightÚ	hash_sizec                 ó2   > [         TU ]  SU5        X l        g )NzPerceptual Hash)ÚsuperÚ__init__r	   )Úselfr   r	   Ú	__class__s      ÚRF:\Programs\PythonProject\VideoDuplicateCleaner\src\algorithms\phash_comparator.pyr   ÚPHashComparator.__init__	   s   ø ÜÑÐ*¨FÔ3Ø"ó    ÚimageÚreturnc                 óH    U R                  XR                  U R                  45      n[        UR                  5      S:X  a&  [        R
-                  " U[        R                  5      nOUn[        R                  " [        R                  " U5      5      nUSS2SS24   n[        R                  " USS2SS24   5      nXV:  nSR                  U VV	s/ s H  o  H  o(       a  SOSPM     M     sn	n5      n
-U
-$ s  sn	nf ! [         a  n[        SU 35         SnAgSnAff = f)	u@   ÐÑÑÐ¸ÑÐ»ÑÐµÑ perceptual hash Ð´Ð»Ñ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñé   Né   r   Ú Ú1Ú0u0   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð²ÑÑÐ¸ÑÐ»ÐµÐ½Ð¸Ð¸ pHash: )Únormalize_imager	   ÚlenÚshapeÚcv2ÚcvtColorÚCOLOR_BGR2GRAYÚdctÚnpÚfloat32ÚmeanÚjoinÚ	ExceptionÚprint)r   r   ÚresizedÚgrayr    Údct_roiÚmean_valÚ
-hash_arrayÚrowÚbitÚhash_strÚes               r   Ú_compute_phashÚPHashComparator._compute_phash   s   ð	à×*Ñ*¨5·>±>À4Ç>Á>Ð2RÓSGô 7==Ó! QÓ&Ü|| G¬S×-?Ñ-?Ó@àô ''"** TÓ*Ó+Cð "1"bqb&kGô www q¡r¨1©2 vÓ/Hð !Ñ+JØww¹zÔYºz¸ÓUXÈc¥s¡°Ò 3ÑUXÑ 3¹zÒYÓZHàOùó  Zøô ó 	ÜÐDÀQÀCÐHÔIÜûð	ús*   CC? ÃC9
-Ã/	C? Ã9C? Ã?
-D!Ä	DÄD!Úimage1Úimage2c                 óR    U R                  U5      nU R                  U5      nU(       a  U(       a  [        U5      [        U5      :w  a  g[        S [        X45       5       5      n[        U5      nSXV-  -
-  n[	        SU5      $ ! [
-         a  n[        SU 35         SnAgSnAff = f)uJ   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ñ Ñ Ð¿Ð¾Ð¼Ð¾ÑÑÑ pHashg        c              3   ó.   #    U  H  u  pX:g  v   M     g 7f)N© )Ú.0Úc1Úc2s      r   Ú	<genexpr>Ú*PHashComparator.compare.<locals>.<genexpr>6   s   é  Ð"LÒ:K±° 2¦8Ò:Kùs   ç      ð?u!   ÐÑÐ¸Ð±ÐºÐ° Ð² PHashComparator: N)r0   r   ÚsumÚzipÚmaxr%   r&   )	r   r2   r3   Úhash1Úhash2Úhamming_distanceÚmax_distanceÚ
-similarityr/   s	            r   ÚcompareÚPHashComparator.compare,   s    ð	Ø×'Ñ'¨Ó/EØ×'Ñ'¨Ó/Eæ¦¬¨U«´s¸5³zÓ)AØô  #Ñ"L¼#¸eÔ:KÓ"LÓLÐô u:LØÐ 0Ñ ?Ñ@JäsJÓ'Ð'øäó 	ÜÐ5°a°SÐ9Ô:Üûð	ús   AB Á8B Â
-B&ÂB!Â!B&)r	   )r<   é   )Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__ÚfloatÚintr   r!   ÚndarrayÚstrr0   rE   Ú__static_attributes__Ú__classcell__)r   s   @r   r   r      s\   ø Ùbñ#uð #°s÷ #ð #ð B§J¡Jð °3ô ð>bjjð °"·*±*ð À÷ ò r   r   )r   Únumpyr!   Úbase_comparatorr   r   r6   r   r   Ú<module>rU      s   ðÛ 
-Û Ý +ô:nõ :r   
-
-
-core\__init__.py
-
-from .file_scanner import FileScanner
-from .frame_extractor import FrameExtractor
-from .video_comparator import VideoComparator
-
-__all__ = ['FileScanner', 'FrameExtractor', 'VideoComparator']
-
-
-core\file_scanner.py
-
-import os
-from typing import List
-
-
-class FileScanner:
-    def __init__(self):
-        self.supported_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
-
-    def find_video_files(self, directory: str) -> List[str]:
-        """
-        Находит все видеофайлы в указанной папке и подпапках
-        """
-        video_files = []
-
-        try:
-            for root, dirs, files in os.walk(directory):
-                for file in files:
-                    file_ext = os.path.splitext(file)[1].lower()
-                    if file_ext in self.supported_formats:
-                        full_path = os.path.join(root, file)
-                        video_files.append(full_path)
-        except Exception as e:
-            print(f"Ошибка при сканировании папки: {e}")
-
-        return video_files
-
-    def get_file_info(self, file_path: str) -> dict:
-        """
-        Получает базовую информацию о файле
-        """
-        try:
-            stat = os.stat(file_path)
-            return {
-                'size': stat.st_size,
-                'modified': stat.st_mtime,
-                'path': file_path
-            }
-        except Exception as e:
-            print(f"Ошибка при получении информации о файле {file_path}: {e}")
-            return {}
-
-
-core\frame_extractor.py
-
-import cv2
-import os
-from typing import List, Optional
-import numpy as np
-
-
-class FrameExtractor:
-    def __init__(self):
-        self.supported_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
-
-    def extract_frames(self, video_path: str, num_frames: int = 10) -> List[np.ndarray]:
-        """
-        Извлекает указанное количество кадров из видео, равномерно распределенных по времени
-
-        Args:
-            video_path: путь к видеофайлу
-            num_frames: количество кадров для извлечения
-
-        Returns:
-            Список кадров в формате numpy arrays
-        """
-        frames = []
-
-        try:
-            # Открываем видеофайл
-            cap = cv2.VideoCapture(video_path)
-
-            if not cap.isOpened():
-                print(f"Не удалось открыть видеофайл: {video_path}")
-                return frames
-
-            # Получаем общее количество кадров и FPS
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            duration = total_frames / fps if fps > 0 else 0
-
-            # Если видео слишком короткое, берем все доступные кадры
-            if total_frames <= num_frames:
-                for i in range(total_frames):
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-                    ret, frame = cap.read()
-                    if ret:
-                        frames.append(frame)
-            else:
-                # Вычисляем позиции для извлечения кадров
-                frame_positions = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-
-                for pos in frame_positions:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-                    ret, frame = cap.read()
-                    if ret:
-                        frames.append(frame)
-
-            cap.release()
-
-        except Exception as e:
-            print(f"Ошибка при извлечении кадров из {video_path}: {e}")
-
-        return frames
-
-    def extract_and_save_frames(self, video_path: str, output_dir: str, num_frames: int = 10) -> List[str]:
-        """
-        Извлекает кадры и сохраняет их в файлы (для отладки)
-        """
-        frames = self.extract_frames(video_path, num_frames)
-        saved_paths = []
-
-        for i, frame in enumerate(frames):
-            filename = f"frame_{i}_{os.path.basename(video_path)}.jpg"
-            output_path = os.path.join(output_dir, filename)
-            try:
-                cv2.imwrite(output_path, frame)
-                saved_paths.append(output_path)
-            except Exception as e:
-                print(f"Ошибка при сохранении кадра {i}: {e}")
-
-        return saved_paths
-
-    def get_video_info(self, video_path: str) -> dict:
-        """
-        Получает информацию о видеофайле
-        """
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                return {}
-
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = total_frames / fps if fps > 0 else 0
-
-            cap.release()
-
-            return {
-                'width': width,
-                'height': height,
-                'fps': fps,
-                'total_frames': total_frames,
-                'duration': duration
-            }
-        except Exception as e:
-            print(f"Ошибка при получении информации о видео {video_path}: {e}")
-            return {}
-
-
-core\optimized_comparator.py
-
-import os
-import hashlib
-from typing import List, Dict, Tuple, Optional
-from src.core.frame_extractor import FrameExtractor
-from src.algorithms.comparison_manager import ComparisonManager
-
-
-class OptimizedVideoComparator:
-    """
-    Оптимизированный компаратор видео с предварительной фильтрацией и кэшированием
-    """
-
-    def __init__(self):
-        self.frame_extractor = FrameExtractor()
-        self.comparison_manager = ComparisonManager()
-        self.num_frames_to_compare = 3  # Уменьшаем количество кадров для скорости
-        self.similarity_threshold = 0.7
-
-        # Кэши для ускорения повторных операций
-        self._frame_cache = {}  # Кэш кадров: video_path -> [frames]
-        self._metadata_cache = {}  # Кэш метаданных: video_path -> metadata
-        self._file_hash_cache = {}  # Кэш хэшей файлов для быстрого определения точных дубликатов
-
-    def _get_file_hash(self, file_path: str) -> str:
-        """Быстрое вычисление хэша файла для определения точных дубликатов"""
-        if file_path in self._file_hash_cache:
-            return self._file_hash_cache[file_path]
-
-        try:
-            file_size = os.path.getsize(file_path)
-            # Для больших файлов берем хэш только от первых 1MB и размера
-            with open(file_path, 'rb') as f:
-                if file_size > 1024 * 1024:
-                    content = f.read(1024 * 1024)  # Первые 1MB
-                    content += str(file_size).encode()  # Добавляем размер файла
-                else:
-                    content = f.read()
-
-            file_hash = hashlib.md5(content).hexdigest()
-            self._file_hash_cache[file_path] = file_hash
-            return file_hash
-        except Exception as e:
-            print(f"Ошибка при вычислении хэша файла {file_path}: {e}")
-            return ""
-
-    def _get_video_metadata(self, video_path: str) -> Dict:
-        """Получает и кэширует метаданные видео"""
-        if video_path in self._metadata_cache:
-            return self._metadata_cache[video_path]
-
-        metadata = self.frame_extractor.get_video_info(video_path)
-        file_info = {
-            'size': os.path.getsize(video_path),
-            'duration': metadata.get('duration', 0),
-            'width': metadata.get('width', 0),
-            'height': metadata.get('height', 0),
-            'file_hash': self._get_file_hash(video_path)
-        }
-
-        self._metadata_cache[video_path] = file_info
-        return file_info
-
-    def _get_cached_frames(self, video_path: str) -> List:
-        """Получает кадры из кэша или извлекает их"""
-        if video_path in self._frame_cache:
-            return self._frame_cache[video_path]
-
-        frames = self.frame_extractor.extract_frames(video_path, self.num_frames_to_compare)
-        self._frame_cache[video_path] = frames
-        return frames
-
-    def _are_metadata_similar(self, meta1: Dict, meta2: Dict) -> bool:
-        """
-        Быстрая проверка по метаданным - отфильтровываем заведомо разные видео
-        """
-        # Если хэши файлов совпадают - это точные дубликаты
-        if meta1['file_hash'] and meta2['file_hash'] and meta1['file_hash'] == meta2['file_hash']:
-            return True
-
-        # Разница в размере файла больше 50% - скорее всего разные видео
-        size_ratio = min(meta1['size'], meta2['size']) / max(meta1['size'], meta2['size'])
-        if size_ratio < 0.5:
-            return False
-
-        # Разница в длительности больше 30% - скорее всего разные видео
-        if meta1['duration'] > 0 and meta2['duration'] > 0:
-            duration_ratio = min(meta1['duration'], meta2['duration']) / max(meta1['duration'], meta2['duration'])
-            if duration_ratio < 0.7:
-                return False
-
-        # Сильно различающееся разрешение
-        if meta1['width'] > 0 and meta2['width'] > 0:
-            width_ratio = min(meta1['width'], meta2['width']) / max(meta1['width'], meta2['width'])
-            if width_ratio < 0.7:
-                return False
-
-        return True
-
-    def find_similar_videos_optimized(self, video_files: List[str], similarity_threshold: float = 0.7) -> List[Tuple]:
-        """
-        Оптимизированный поиск похожих видео
-        """
-        self.similarity_threshold = similarity_threshold
-        similar_pairs = []
-
-        print(f"🔍 Анализируем {len(video_files)} видеофайлов...")
-
-        # Шаг 1: Собираем метаданные для всех файлов
-        print("📊 Собираем метаданные...")
-        video_metadata = {}
-        for video_path in video_files:
-            video_metadata[video_path] = self._get_video_metadata(video_path)
-
-        # Шаг 2: Группируем по хэшам для быстрого нахождения точных дубликатов
-        print("🎯 Ищем точные дубликаты...")
-        hash_groups = {}
-        for video_path, meta in video_metadata.items():
-            if meta['file_hash']:
-                if meta['file_hash'] not in hash_groups:
-                    hash_groups[meta['file_hash']] = []
-                hash_groups[meta['file_hash']].append(video_path)
-
-        # Добавляем точные дубликаты в результаты
-        for file_hash, group in hash_groups.items():
-            if len(group) > 1:
-                for i in range(len(group)):
-                    for j in range(i + 1, len(group)):
-                        similar_pairs.append((group[i], group[j], 1.0, {'type': 'exact_duplicate'}))
-
-        # Шаг 3: Предварительная фильтрация по метаданным
-        print("⚡ Фильтруем по метаданным...")
-        candidate_pairs = []
-        processed_pairs = set()
-
-        for i, video1 in enumerate(video_files):
-            meta1 = video_metadata[video1]
-
-            for j, video2 in enumerate(video_files[i + 1:], i + 1):
-                # Пропускаем если уже нашли как точные дубликаты
-                if (video1, video2) in processed_pairs or (video2, video1) in processed_pairs:
-                    continue
-
-                meta2 = video_metadata[video2]
-
-                # Быстрая проверка по метаданным
-                if self._are_metadata_similar(meta1, meta2):
-                    candidate_pairs.append((video1, video2))
-
-                processed_pairs.add((video1, video2))
-
-        print(f"🎯 Кандидатов для глубокого анализа: {len(candidate_pairs)}")
-
-        # Шаг 4: Глубокий анализ только кандидатов
-        print("🔍 Запускаем глубокий анализ...")
-        for idx, (video1, video2) in enumerate(candidate_pairs):
-            if idx % 10 == 0:
-                print(f"📈 Обработано {idx}/{len(candidate_pairs)} пар...")
-
-            result = self.compare_videos(video1, video2)
-            similarity = result['similarity']
-
-            if similarity >= similarity_threshold:
-                similar_pairs.append((video1, video2, similarity, result))
-
-        # Сортируем по убыванию схожести
-        similar_pairs.sort(key=lambda x: x[2], reverse=True)
-
-        return similar_pairs
-
-    def compare_videos(self, video_path1: str, video_path2: str) -> Dict:
-        """
-        Оптимизированное сравнение двух видео
-        """
-        # Используем кэшированные кадры
-        frames1 = self._get_cached_frames(video_path1)
-        frames2 = self._get_cached_frames(video_path2)
-
-        if not frames1 or not frames2:
-            return {
-                'similarity': 0.0,
-                'error': 'Не удалось извлечь кадры',
-                'details': {}
-            }
-
-        # Упрощенное сравнение - берем только лучшие совпадения
-        frame_comparisons = []
-        total_similarity = 0.0
-        compared_pairs = 0
-
-        # Сравниваем только ограниченное количество комбинаций
-        max_comparisons = min(len(frames1), len(frames2), 3)
-
-        for i in range(max_comparisons):
-            frame1 = frames1[i] if i < len(frames1) else frames1[0]
-            frame2 = frames2[i] if i < len(frames2) else frames2[0]
-
-            comparison_result = self.comparison_manager.compare_images(frame1, frame2)
-            similarity = comparison_result.get('overall', 0.0)
-
-            frame_comparisons.append({
-                'frame1_index': i,
-                'frame2_index': i,
-                'similarity': similarity,
-                'algorithm_details': comparison_result
-            })
-
-            total_similarity += similarity
-            compared_pairs += 1
-
-        # Вычисляем общую схожесть
-        overall_similarity = total_similarity / compared_pairs if compared_pairs > 0 else 0.0
-
-        return {
-            'similarity': overall_similarity,
-            'frame_comparisons': frame_comparisons,
-            'frames_extracted': {
-                'video1': len(frames1),
-                'video2': len(frames2)
-            }
-        }
-
-    def clear_cache(self):
-        """Очищает кэши"""
-        self._frame_cache.clear()
-        self._metadata_cache.clear()
-        self._file_hash_cache.clear()
-
-
-core\video_comparator.py
-
-import os
-from typing import List, Dict, Tuple
-
-# Абсолютные импорты вместо относительных
-from src.algorithms.comparison_manager import ComparisonManager
-from src.core.frame_extractor import FrameExtractor
-
-
-class VideoComparator:
-    """Сравнивает два видеофайла используя несколько алгоритмов"""
-
-    def __init__(self):
-        self.frame_extractor = FrameExtractor()
-        self.comparison_manager = ComparisonManager()
-        self.num_frames_to_compare = 5  # Количество кадров для сравнения
-
-    def compare_videos(self, video_path1: str, video_path2: str) -> Dict:
-        """
-        Сравнивает два видеофайла
-        Возвращает детализированные результаты сравнения
-        """
-        print(f"Сравниваем видео: {os.path.basename(video_path1)} и {os.path.basename(video_path2)}")
-
-        # Извлекаем кадры из обоих видео
-        frames1 = self.frame_extractor.extract_frames(video_path1, self.num_frames_to_compare)
-        frames2 = self.frame_extractor.extract_frames(video_path2, self.num_frames_to_compare)
-
-        if not frames1 or not frames2:
-            return {
-                'similarity': 0.0,
-                'error': 'Не удалось извлечь кадры из одного из видео',
-                'details': {}
-            }
-
-        print(f"Извлечено {len(frames1)} кадров из первого видео и {len(frames2)} из второго")
-
-        # Сравниваем кадры
-        frame_comparisons = []
-        total_similarity = 0.0
-        compared_pairs = 0
-
-        for i, frame1 in enumerate(frames1):
-            best_similarity = 0.0
-            best_comparison_details = {}
-
-            for j, frame2 in enumerate(frames2):
-                # Сравниваем два кадра
-                comparison_result = self.comparison_manager.compare_images(frame1, frame2)
-                similarity = comparison_result.get('overall', 0.0)
-
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_comparison_details = {
-                        'frame1_index': i,
-                        'frame2_index': j,
-                        'similarity': similarity,
-                        'algorithm_details': comparison_result
-                    }
-
-            if best_comparison_details:
-                frame_comparisons.append(best_comparison_details)
-                total_similarity += best_similarity
-                compared_pairs += 1
-
-        # Вычисляем общую схожесть
-        overall_similarity = total_similarity / compared_pairs if compared_pairs > 0 else 0.0
-
-        return {
-            'similarity': overall_similarity,
-            'frame_comparisons': frame_comparisons,
-            'frames_extracted': {
-                'video1': len(frames1),
-                'video2': len(frames2)
-            },
-            'algorithm_weights': {comp.name: comp.weight for comp in self.comparison_manager.comparators}
-        }
-
-    def find_similar_videos(self, video_files: List[str], similarity_threshold: float = 0.7) -> List[Tuple]:
-        """
-        Находит похожие видео среди списка файлов
-        Возвращает список кортежей (video1, video2, similarity)
-        """
-        similar_pairs = []
-
-        for i in range(len(video_files)):
-            for j in range(i + 1, len(video_files)):
-                video1 = video_files[i]
-                video2 = video_files[j]
-
-                print(f"Сравниваем {i + 1}/{len(video_files)}: {os.path.basename(video1)} и {os.path.basename(video2)}")
-
-                result = self.compare_videos(video1, video2)
-                similarity = result['similarity']
-
-                if similarity >= similarity_threshold:
-                    similar_pairs.append((video1, video2, similarity, result))
-
-        # Сортируем по убыванию схожести
-        similar_pairs.sort(key=lambda x: x[2], reverse=True)
-
-        return similar_pairs
-
-
-core\__pycache__\__init__.cpython-313.pyc
-
-у
-    “iГ   г                   у0   • S SK Jr  S SKJr  S SKJr  / SQrg)й   )ЪFileScanner)ЪFrameExtractor)ЪVideoComparator)r   r   r   N)Ъfile_scannerr   Ъframe_extractorr   Ъvideo_comparatorr   Ъ__all__© у    ЪDF:\Programs\PythonProject\VideoDuplicateCleaner\src\core\__init__.pyЪ<module>r      s   рЭ %Э +Э -в
->Ѓr   
-
-
-core\__pycache__\file_scanner.cpython-313.pyc
-
-ó
-    i  ã                   ó,    S SK r S SKJr   " S S5      rg)é    N)ÚListc                   óD    \ rS rSrS rS\S\\   4S jrS\S\4S jr	Sr
-g	)
-ÚFileScanneré   c                 ó    1 SkU l         g )N>   ú.aviú.mkvú.movú.mp4ú.wmv©Úsupported_formats)Úselfs    ÚHF:\Programs\PythonProject\VideoDuplicateCleaner\src\core\file_scanner.pyÚ__init__ÚFileScanner.__init__   s
-    Ú!IÕó    Ú	directoryÚreturnc                 ó   / n [         R                  " U5       H  u  p4nU Ht  n[         R                  R                  U5      S   R	                  5       nXpR
-                  ;   d  MD  [         R                  R                  X65      nUR                  U5        Mv     M     U$ ! [         a  n	[        SU	 35         Sn	A	U$ Sn	A	ff = f)uc   
-ÐÐ°ÑÐ¾Ð´Ð¸Ñ Ð²ÑÐµ Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ñ Ð² ÑÐºÐ°Ð·Ð°Ð½Ð½Ð¾Ð¹ Ð¿Ð°Ð¿ÐºÐµ Ð¸ Ð¿Ð¾Ð´Ð¿Ð°Ð¿ÐºÐ°Ñ
-é   u9   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ ÑÐºÐ°Ð½Ð¸ÑÐ¾Ð²Ð°Ð½Ð¸Ð¸ Ð¿Ð°Ð¿ÐºÐ¸: N)
-ÚosÚwalkÚpathÚsplitextÚlowerr   ÚjoinÚappendÚ	ExceptionÚprint)
-r   r   Úvideo_filesÚrootÚdirsÚfilesÚfileÚfile_extÚ	full_pathÚes
-             r   Úfind_video_filesÚFileScanner.find_video_files	   s´    ð ð	SÜ%'§W¢W¨YÖ%7Ñ!EÛ!DÜ!ww×/Ñ/°Ó5°aÑ8×>Ñ>Ó@HØ×#9Ñ#9Õ9Ü$&§G¡G§L¡L°Ó$<	Ø#×*Ñ*¨9Ö5ó	 "ñ &8ð Ðøô ó 	SÜÐMÈaÈSÐQ×RÐRàÐûð	Sús   AB  Á&8B  Â 
-CÂ*B>Â>CÚ	file_pathc                 ó¸     [         R                  " U5      nUR                  UR                  US.$ ! [         a  n[        SU SU 35        0 s SnA$ SnAff = f)uD   
-ÐÐ¾Ð»ÑÑÐ°ÐµÑ Ð±Ð°Ð·Ð¾Ð²ÑÑ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ñ Ð¾ ÑÐ°Ð¹Ð»Ðµ
-)ÚsizeÚmodifiedr   uJ   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¿Ð¾Ð»ÑÑÐµÐ½Ð¸Ð¸ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ð¸ Ð¾ ÑÐ°Ð¹Ð»Ðµ z: N)r   ÚstatÚst_sizeÚst_mtimer   r    )r   r+   r/   r(   s       r   Úget_file_infoÚFileScanner.get_file_info   sb    ð		Ü779Ó%DàØ MMØ!ñð øô
- ó 	ÜÐ^Ð_hÐ^iÐikÐlmÐknÐoÔpØIûð	ús   /2 ²
-A¼AÁAÁAr   N)Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__r   Ústrr   r)   Údictr2   Ú__static_attributes__© r   r   r   r      s2    òJð¨#ð °$°s±)ô ð$ sð ¨t÷ r   r   )r   Útypingr   r   r;   r   r   Ú<module>r=      s   ðÛ 	Ý ÷#ò #r   
-
-
-core\__pycache__\frame_extractor.cpython-313.pyc
-
-ó
-    +iò  ã                   ó@    S SK r S SKrS SKJrJr  S SKr " S S5      rg)é    N)ÚListÚOptionalc            
-       ó    \ rS rSrS rSS\S\S\\R                     4S jjr
-SS\S\S\S\\   4S jjrS\S\4S	 jrS
-rg)ÚFrameExtractoré   c                 ó    1 SkU l         g )N>   ú.aviú.mkvú.movú.mp4ú.wmv©Úsupported_formats)Úselfs    ÚKF:\Programs\PythonProject\VideoDuplicateCleaner\src\core\frame_extractor.pyÚ__init__ÚFrameExtractor.__init__   s
-    Ú!IÕó    Ú
-video_pathÚ
-num_framesÚreturnc                 óH   / n [         R                  " U5      nUR                  5       (       d  [        SU 35        U$ [	        UR                  [         R                  5      5      nUR                  [         R                  5      nUS:  a  XV-  OSnXR::  a_  [        U5       HO  nUR                  [         R                  U5        UR                  5       u  pU	(       d  M>  UR                  U
-5        MQ     Os[        R                  " SUS-
-  U[        S9nU HO  nUR                  [         R                  U5        UR                  5       u  pU	(       d  M>  UR                  U
-5        MQ     UR                  5         U$ ! [          a  n[        SU SU 35         SnAU$ SnAff = f)um  
-ÐÐ·Ð²Ð»ÐµÐºÐ°ÐµÑ ÑÐºÐ°Ð·Ð°Ð½Ð½Ð¾Ðµ ÐºÐ¾Ð»Ð¸ÑÐµÑÑÐ²Ð¾ ÐºÐ°Ð´ÑÐ¾Ð² Ð¸Ð· Ð²Ð¸Ð´ÐµÐ¾, ÑÐ°Ð²Ð½Ð¾Ð¼ÐµÑÐ½Ð¾ ÑÐ°ÑÐ¿ÑÐµÐ´ÐµÐ»ÐµÐ½Ð½ÑÑ Ð¿Ð¾ Ð²ÑÐµÐ¼ÐµÐ½Ð¸
-
-Args:
-    video_path: Ð¿ÑÑÑ Ðº Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ñ
-    num_frames: ÐºÐ¾Ð»Ð¸ÑÐµÑÑÐ²Ð¾ ÐºÐ°Ð´ÑÐ¾Ð² Ð´Ð»Ñ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ñ
-
-Returns:
-    Ð¡Ð¿Ð¸ÑÐ¾Ðº ÐºÐ°Ð´ÑÐ¾Ð² Ð² ÑÐ¾ÑÐ¼Ð°ÑÐµ numpy arrays
-u7   ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ Ð¾ÑÐºÑÑÑÑ Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»: r   é   )Údtypeu;   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ð¸ ÐºÐ°Ð´ÑÐ¾Ð² Ð¸Ð· ú: N)Úcv2ÚVideoCaptureÚisOpenedÚprintÚintÚgetÚCAP_PROP_FRAME_COUNTÚCAP_PROP_FPSÚrangeÚsetÚCAP_PROP_POS_FRAMESÚreadÚappendÚnpÚlinspaceÚreleaseÚ	Exception)r   r   r   ÚframesÚcapÚtotal_framesÚfpsÚdurationÚiÚretÚframeÚframe_positionsÚposÚes                 r   Úextract_framesÚFrameExtractor.extract_frames   sh   ð ð!	cä×"Ò" :Ó.Cà<<>>ÜÐOÐPZÈ|Ð\Ô]Øô sww¤s×'?Ñ'?Ó@ÓALØ''#×*Ñ*Ó+CØ-0°1«W|Ò)¸!Hð Ó)Ü|Ö,AØGGC×3Ñ3°QÔ7Ø!$§¡£JCßsØ eÖ,ò	 -ô #%§+¢+¨a°ÀÑ1AÀ:ÔUXÑ"Yã*CØGGC×3Ñ3°SÔ9Ø!$§¡£JCßsØ eÖ,ñ	 +ð KKMð
- øô ó 	cÜÐOÐPZÈ|Ð[]Ð^_Ð]`Ða×bÐbàûð	cús*   :E; ¿BE; Ã A0E; Å%E; Å;
-F!ÆFÆF!Ú
-output_dirc                 ó   U R                  X5      n/ n[        U5       Hr  u  pgSU S[        R                  R	                  U5       S3n[        R                  R                  X(5      n	 [        R                  " X5        UR                  U	5        Mt     U$ ! [         a  n
-[        SU SU
- 35         Sn
-A
-M  Sn
-A
-ff = f)u`   
-ÐÐ·Ð²Ð»ÐµÐºÐ°ÐµÑ ÐºÐ°Ð´ÑÑ Ð¸ ÑÐ¾ÑÑÐ°Ð½ÑÐµÑ Ð¸Ñ Ð² ÑÐ°Ð¹Ð»Ñ (Ð´Ð»Ñ Ð¾ÑÐ»Ð°Ð´ÐºÐ¸)
-Úframe_Ú_z.jpgu4   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ ÑÐ¾ÑÑÐ°Ð½ÐµÐ½Ð¸Ð¸ ÐºÐ°Ð´ÑÐ° r   N)r8   Ú	enumerateÚosÚpathÚbasenameÚjoinr   Úimwriter(   r,   r   )r   r   r:   r   r-   Úsaved_pathsr2   r4   ÚfilenameÚoutput_pathr7   s              r   Úextract_and_save_framesÚ&FrameExtractor.extract_and_save_frames=   s·    ð ×$Ñ$ ZÓ<Øä! &Ö)HAØ s !¤B§G¡G×$4Ñ$4°ZÓ$@Ð#AÀÐFHÜ'',, zÓ<KðWÜKÔ/Ø×"Ñ" ;Ö/ñ *ð Ðøô ó WÜÐLÈQÈCÈrÐRSÐQTÐU×VÒVûðWús   Á*'BÂ
-B=Â!B8Â8B=c                 ó(    [         R                  " U5      nUR                  5       (       d  0 $ [        UR	                  [         R
-                  5      5      n[        UR	                  [         R                  5      5      nUR	                  [         R                  5      n[        UR	                  [         R                  5      5      nUS:  a  Xe-  OSnUR                  5         UUUUUS.$ ! [         a  n[        SU SU 35        0 s SnA$ SnAff = f)u?   
-ÐÐ¾Ð»ÑÑÐ°ÐµÑ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ñ Ð¾ Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ðµ
-r   )ÚwidthÚheightr0   r/   r1   uJ   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¿Ð¾Ð»ÑÑÐµÐ½Ð¸Ð¸ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ð¸ Ð¾ Ð²Ð¸Ð´ÐµÐ¾ r   N)r   r   r   r    r!   ÚCAP_PROP_FRAME_WIDTHÚCAP_PROP_FRAME_HEIGHTr#   r"   r+   r,   r   )	r   r   r.   rJ   rK   r0   r/   r1   r7   s	            r   Úget_video_infoÚFrameExtractor.get_video_infoO   sì    ð	Ü×"Ò" :Ó.CØ<<>>Ø	ä¤× 8Ñ 8Ó9Ó:EÜ¤×!:Ñ!:Ó;Ó<FØ''#×*Ñ*Ó+CÜsww¤s×'?Ñ'?Ó@ÓALØ-0°1«W|Ò)¸!HàKKMð Ø ØØ ,Ø$ñð øô ó 	ÜÐ^Ð_iÐ^jÐjlÐmnÐloÐpÔqØIûð	ús#   ,C* ¯B:C* Ã*
-DÃ4DÄDÄDr   N)é
-   )Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__r   Ústrr    r   r)   Úndarrayr8   rG   ÚdictrN   Ú__static_attributes__© r   r   r   r      sh    òJñ0¨ð 0¸#ð 0ÀtÈBÏJÉJÑGWõ 0ñd°#ð À3ð ÐTWð ÐaeÐfiÑajõ ð$¨ð °÷ r   r   )r   r?   Útypingr   r   Únumpyr)   r   rY   r   r   Ú<module>r\      s   ðÛ 
-Û 	ß !Û ÷bò br   
-
-
-core\__pycache__\optimized_comparator.cpython-313.pyc
-
-ó
-    #im(  ã                   óX    S SK r S SKrS SKJrJrJrJr  S SKJr  S SK	J
-r
-   " S S5      rg)é    N)ÚListÚDictÚTupleÚOptional)ÚFrameExtractor)ÚComparisonManagerc                   ó¬    \ rS rSrSrS rS\S\4S jrS\S\4S jr	S\S\
-4S	 jrS
-\S\S\4S jrSS\
-\   S\S\
-\   4S jjrS\S\S\4S jrS rSrg)ÚOptimizedVideoComparatoré   u   
-ÐÐ¿ÑÐ¸Ð¼Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°Ð½Ð½ÑÐ¹ ÐºÐ¾Ð¼Ð¿Ð°ÑÐ°ÑÐ¾Ñ Ð²Ð¸Ð´ÐµÐ¾ Ñ Ð¿ÑÐµÐ´Ð²Ð°ÑÐ¸ÑÐµÐ»ÑÐ½Ð¾Ð¹ ÑÐ¸Ð»ÑÑÑÐ°ÑÐ¸ÐµÐ¹ Ð¸ ÐºÑÑÐ¸ÑÐ¾Ð²Ð°Ð½Ð¸ÐµÐ¼
-c                 ó    [        5       U l        [        5       U l        SU l        SU l        0 U l        0 U l        0 U l        g )Né   çffffffæ?)	r   Úframe_extractorr   Úcomparison_managerÚnum_frames_to_compareÚsimilarity_thresholdÚ_frame_cacheÚ_metadata_cacheÚ_file_hash_cache©Úselfs    ÚPF:\Programs\PythonProject\VideoDuplicateCleaner\src\core\optimized_comparator.pyÚ__init__Ú!OptimizedVideoComparator.__init__   sB    Ü-Ó/ÔÜ"3Ó"5ÔØ%&Ô"Ø$'Ô!ð ÔØ!ÔØ "Õó    Ú	file_pathÚreturnc                 ó
-   XR                   ;   a  U R                   U   $  [        R                  R                  U5      n[	        US5       nUS:  a.  UR                  S5      nU[        U5      R                  5       -  nOUR                  5       nSSS5        [        R                  " W5      R                  5       nXPR                   U'   U$ ! , (       d  f       NB= f! [         a  n[        SU SU 35         SnAgSnAff = f)uw   ÐÑÑÑÑÐ¾Ðµ Ð²ÑÑÐ¸ÑÐ»ÐµÐ½Ð¸Ðµ ÑÑÑÐ° ÑÐ°Ð¹Ð»Ð° Ð´Ð»Ñ Ð¾Ð¿ÑÐµÐ´ÐµÐ»ÐµÐ½Ð¸Ñ ÑÐ¾ÑÐ½ÑÑ Ð´ÑÐ±Ð»Ð¸ÐºÐ°ÑÐ¾Ð²Úrbi   Nu=   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð²ÑÑÐ¸ÑÐ»ÐµÐ½Ð¸Ð¸ ÑÑÑÐ° ÑÐ°Ð¹Ð»Ð° z: Ú )r   ÚosÚpathÚgetsizeÚopenÚreadÚstrÚencodeÚhashlibÚmd5Ú	hexdigestÚ	ExceptionÚprint)r   r   Ú	file_sizeÚfÚcontentÚ	file_hashÚes          r   Ú_get_file_hashÚ'OptimizedVideoComparator._get_file_hash   sä    à×-Ñ-Ó-Ø×(Ñ(¨Ñ3Ð3ð	Ü¨	Ó2Iäi Ô&¨!Ø{Ó*Øff [Ó1GØs 9~×4Ñ4Ó6Ñ6GàffhG÷ 'ô   GÓ,×6Ñ6Ó8IØ/8×!Ñ! )Ñ,ØÐ÷ 'Õ&ûô ó 	ÜÐQÐR[ÐQ\Ð\^Ð_`Ð^aÐbÔcÜûð	ús0    +C ÁACÂ;C Ã
-CÃC Ã
-DÃ'C=Ã=DÚ
-video_pathc                 ó\   XR                   ;   a  U R                   U   $ U R                  R                  U5      n[        R                  R                  U5      UR                  SS5      UR                  SS5      UR                  SS5      U R                  U5      S.nX0R                   U'   U$ )uD   ÐÐ¾Ð»ÑÑÐ°ÐµÑ Ð¸ ÐºÑÑÐ¸ÑÑÐµÑ Ð¼ÐµÑÐ°Ð´Ð°Ð½Ð½ÑÐµ Ð²Ð¸Ð´ÐµÐ¾Údurationr   ÚwidthÚheight)Úsizer6   r7   r8   r0   )r   r   Úget_video_infor!   r"   r#   Úgetr2   )r   r4   ÚmetadataÚ	file_infos       r   Ú_get_video_metadataÚ,OptimizedVideoComparator._get_video_metadata.   s    à×-Ñ-Ó-Ø×'Ñ'¨
-Ñ3Ð3à×'Ñ'×6Ñ6°zÓBäGGOO JÓ/Ø  Z°Ó3Ø\\ '¨1Ó-Øll 8¨QÓ/Ø×,Ñ,¨ZÓ8ñ
-	ð ,5×ÑZÑ(ØÐr   c                 ó¨    XR                   ;   a  U R                   U   $ U R                  R                  XR                  5      nX R                   U'   U$ )uH   ÐÐ¾Ð»ÑÑÐ°ÐµÑ ÐºÐ°Ð´ÑÑ Ð¸Ð· ÐºÑÑÐ° Ð¸Ð»Ð¸ Ð¸Ð·Ð²Ð»ÐµÐºÐ°ÐµÑ Ð¸Ñ)r   r   Úextract_framesr   )r   r4   Úframess      r   Ú_get_cached_framesÚ+OptimizedVideoComparator._get_cached_frames?   sN    à×*Ñ*Ó*Ø×$Ñ$ ZÑ0Ð0à×%Ñ%×4Ñ4°Z×A[ÑA[Ó\Ø(.×Ñ*Ñ%Ør   Úmeta1Úmeta2c                 ó   US   (       a  US   (       a  US   US   :X  a  g[        US   US   5      [        US   US   5      -  nUS:  a  gUS   S:  a5  US   S:  a,  [        US   US   5      [        US   US   5      -  nUS:  a  gUS	   S:  a5  US	   S:  a,  [        US	   US	   5      [        US	   US	   5      -  nUS:  a  gg)
-u   
-ÐÑÑÑÑÐ°Ñ Ð¿ÑÐ¾Ð²ÐµÑÐºÐ° Ð¿Ð¾ Ð¼ÐµÑÐ°Ð´Ð°Ð½Ð½ÑÐ¼ - Ð¾ÑÑÐ¸Ð»ÑÑÑÐ¾Ð²ÑÐ²Ð°ÐµÐ¼ Ð·Ð°Ð²ÐµÐ´Ð¾Ð¼Ð¾ ÑÐ°Ð·Ð½ÑÐµ Ð²Ð¸Ð´ÐµÐ¾
-r0   Tr9   g      à?Fr6   r   r   r7   )ÚminÚmax)r   rE   rF   Ú
-size_ratioÚduration_ratioÚwidth_ratios         r   Ú_are_metadata_similarÚ.OptimizedVideoComparator._are_metadata_similarH   s   ð
- × %¨×"4¸¸{Ñ9KÈuÐU`ÑOaÓ9aØô v¨¨f©Ó6¼¸UÀ6¹]ÈEÐRXÉMÓ9ZÑZ
-ØÓØð ÑqÓ  U¨:Ñ%6¸Ó%:Ü   zÑ!2°E¸*Ñ4EÓFÌÈUÐS]ÑM^Ð`eÐfpÑ`qÓIrÑrNØ Ó#Øð >AÓ %¨¡.°1Ó"4Üe Gn¨e°G©nÓ=ÄÀEÈ'ÁNÐTYÐZaÑTbÓ@cÑcKØSÓ Øàr   Úvideo_filesr   c           
-      óÎ   X l         / n[        S[        U5       S35        [        S5        0 nU H  nU R                  U5      XE'   M     [        S5        0 nUR	                  5        H7  u  pWUS   (       d  M  US   U;  a  / XgS   '   XgS      R                  U5        M9     UR	                  5        Hk  u  p[        U	5      S:  d  M  [        [        U	5      5       H=  n
-[        U
-S-   [        U	5      5       H  nUR                  X   X   SSS	045        M      M?     Mm     [        S
-5        / n[        5       n[        U5       H{  u  p®XN   n[        XS-   S U
-S-   5       HZ  u  nnUU4U;   d  UU4U;   a  M  UU   nU R                  UU5      (       a  UR                  UU45        UR                  UU45        M\     M}     [        S[        U5       35        [        S5        [        U5       Ha  u  nu  nnUS-  S:X  a  [        SU S[        U5       S35        U R                  UU5      nUS   nUU:¼  d  ML  UR                  UUUU45        Mc     UR                  S SS9  U$ )uG   
-ÐÐ¿ÑÐ¸Ð¼Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°Ð½Ð½ÑÐ¹ Ð¿Ð¾Ð¸ÑÐº Ð¿Ð¾ÑÐ¾Ð¶Ð¸Ñ Ð²Ð¸Ð´ÐµÐ¾
-u   ð ÐÐ½Ð°Ð»Ð¸Ð·Ð¸ÑÑÐµÐ¼ u    Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ð¾Ð²...u-   ð Ð¡Ð¾Ð±Ð¸ÑÐ°ÐµÐ¼ Ð¼ÐµÑÐ°Ð´Ð°Ð½Ð½ÑÐµ...u0   ð¯ ÐÑÐµÐ¼ ÑÐ¾ÑÐ½ÑÐµ Ð´ÑÐ±Ð»Ð¸ÐºÐ°ÑÑ...r0   é   g      ð?ÚtypeÚexact_duplicateu3   â¡ Ð¤Ð¸Ð»ÑÑÑÑÐµÐ¼ Ð¿Ð¾ Ð¼ÐµÑÐ°Ð´Ð°Ð½Ð½ÑÐ¼...NuD   ð¯ ÐÐ°Ð½Ð´Ð¸Ð´Ð°ÑÐ¾Ð² Ð´Ð»Ñ Ð³Ð»ÑÐ±Ð¾ÐºÐ¾Ð³Ð¾ Ð°Ð½Ð°Ð»Ð¸Ð·Ð°: u8   ð ÐÐ°Ð¿ÑÑÐºÐ°ÐµÐ¼ Ð³Ð»ÑÐ±Ð¾ÐºÐ¸Ð¹ Ð°Ð½Ð°Ð»Ð¸Ð·...é
-   r   u   ð ÐÐ±ÑÐ°Ð±Ð¾ÑÐ°Ð½Ð¾ Ú/u
-    Ð¿Ð°Ñ...Ú
-similarityc                 ó    U S   $ )Né   © )Úxs    r   Ú<lambda>ÚHOptimizedVideoComparator.find_similar_videos_optimized.<locals>.<lambda>¦   s    ¨¨1ªr   T)ÚkeyÚreverse)r   r,   Úlenr>   ÚitemsÚappendÚrangeÚsetÚ	enumeraterM   ÚaddÚcompare_videosÚsort)r   rO   r   Úsimilar_pairsÚvideo_metadatar4   Úhash_groupsÚmetar0   ÚgroupÚiÚjÚcandidate_pairsÚprocessed_pairsÚvideo1rE   Úvideo2rF   ÚidxÚresultrV   s                        r   Úfind_similar_videos_optimizedÚ6OptimizedVideoComparator.find_similar_videos_optimizedc   s   ð %9Ô!ØäÐ,¬S°Ó-=Ð,>Ð>XÐYÔZô 	Ð=Ô>ØÛ%JØ)-×)AÑ)AÀ*Ó)MNÓ&ñ &ô 	Ð@ÔAØØ .× 4Ñ 4Ö 6ÑJØK× Ñ ØÑ$¨KÓ7Ø57K [Ñ 1Ñ2Ø Ñ-Ñ.×5Ñ5°jÖAñ	 !7ð !,× 1Ñ 1Ö 3ÑIÜ5zA~Üs 5zÖ*AÜ" 1 q¡5¬#¨e«*Ö5Ø%×,Ñ,¨e©h¸¹À#ÈÐPaÐGbÐ-cÖdó 6ó +ñ !4ô 	ÐCÔDØÜ%ä" ;Ö/IAØ"Ñ*Eä& {°q±5°6Ð':¸AÀ¹EÖB	6àFÐ# Ó6¸6À6Ð:JÈoÓ:]Ùà& vÑ.ð ×-Ñ-¨e°U×;Ñ;Ø#×*Ñ*¨F°FÐ+;Ô<à×#Ñ# V¨VÐ$4Ö5ó Cñ 0ô  	ÐTÔUXÐYhÓUiÐTjÐkÔlô 	ÐHÔIÜ%.¨Ö%?Ñ!CÑ!&&ØRx1}ÜÐ2°3°%°q¼¸_Ó9MÐ8NÈjÐYÔZà×(Ñ(¨°Ó8FØ Ñ-JàÐ1Õ1Ø×$Ñ$ f¨f°jÀ&Ð%IÖJñ &@ð 	×Ñ~°tÐÑ<àÐr   Úvideo_path1Úvideo_path2c                 ó"   U R                  U5      nU R                  U5      nU(       a  U(       d  SS0 S.$ / nSnSn[        [        U5      [        U5      S5      n[        U5       H  n	U	[        U5      :  a  X9   OUS   n
-U	[        U5      :  a  XI   OUS   nU R                  R                  X«5      nUR                  SS5      nUR                  U	U	UUS.5        Xm-  nUS-  nM     US:  a  Xg-  OSnUU[        U5      [        U5      S	.S
-.$ )uI   
-ÐÐ¿ÑÐ¸Ð¼Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°Ð½Ð½Ð¾Ðµ ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ðµ Ð´Ð²ÑÑ Ð²Ð¸Ð´ÐµÐ¾
-g        u-   ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ Ð¸Ð·Ð²Ð»ÐµÑÑ ÐºÐ°Ð´ÑÑ)rV   ÚerrorÚdetailsr   r   Úoverall)Úframe1_indexÚframe2_indexrV   Úalgorithm_detailsrQ   )rq   rr   )rV   Úframe_comparisonsÚframes_extracted)rC   rH   r_   rb   r   Úcompare_imagesr;   ra   )r   rw   rx   Úframes1Úframes2r   Útotal_similarityÚcompared_pairsÚmax_comparisonsrm   Úframe1Úframe2Úcomparison_resultrV   Úoverall_similaritys                  r   rf   Ú'OptimizedVideoComparator.compare_videosª   sA   ð
- ×)Ñ)¨+Ó6Ø×)Ñ)¨+Ó6ægà!ØHØñð ð ÐØÐØô c 'l¬C°«L¸!Ó<äÖ'AØ#$¤s¨7£|Ó#3WZ¸À¹FØ#$¤s¨7£|Ó#3WZ¸À¹Fà $× 7Ñ 7× FÑ FÀvÓ VÐØ*×.Ñ.¨y¸#Ó>Jà×$Ñ$Ø !Ø !Ø(Ø%6ñ	&ô ð Ñ*ÐØaÑNñ (ð$ CQÐSTÓBTÐ-Ò>ÐZ]Ðð -Ø!2äg,Üg,ñ!ñ
-ð 	
-r   c                 ó     U R                   R                  5         U R                  R                  5         U R                  R                  5         g)u   ÐÑÐ¸ÑÐ°ÐµÑ ÐºÑÑÐ¸N)r   Úclearr   r   r   s    r   Úclear_cacheÚ$OptimizedVideoComparator.clear_cacheÞ   s8    à×Ñ×ÑÔ!Ø×Ñ×"Ñ"Ô$Ø×Ñ×#Ñ#Õ%r   )r   r   r   r   r   r   r   N)r   )Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__r   r&   r2   r   r>   r   rC   ÚboolrM   Úfloatr   ru   rf   r   Ú__static_attributes__rY   r   r   r
-   r
-      sª    ñò	#ð¨ð °ô ð,¨cð °dô ð"¨Sð °Tô ð¨4ð ¸ð Àô ñ6E¸¸c¹ð EÐZ_ð EÐjnÐotÑjuõ EðN2
-¨#ð 2
-¸Cð 2
-ÀDô 2
-õh&r   r
-   )r!   r(   Útypingr   r   r   r   Úsrc.core.frame_extractorr   Ú!src.algorithms.comparison_managerr   r
-   rY   r   r   Ú<module>r      s#   ðÛ 	Û ß .Ó .Ý 3Ý ?÷Z&ò Z&r   
-
-
-core\__pycache__\video_comparator.cpython-313.pyc
-
-ó
-    oi  ã                   óL    S SK r S SKJrJrJr  S SKJr  S SKJr   " S S5      r	g)é    N)ÚListÚDictÚTuple)ÚComparisonManager)ÚFrameExtractorc                   óZ    \ rS rSrSrS rS\S\S\4S jrSS\	\   S	\
-S\	\   4S
- jjrSrg)ÚVideoComparatoré	   uk   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ð° Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÑ Ð½ÐµÑÐºÐ¾Ð»ÑÐºÐ¾ Ð°Ð»Ð³Ð¾ÑÐ¸ÑÐ¼Ð¾Ð²c                 óN    [        5       U l        [        5       U l        SU l        g )Né   )r   Úframe_extractorr   Úcomparison_managerÚnum_frames_to_compare)Úselfs    ÚLF:\Programs\PythonProject\VideoDuplicateCleaner\src\core\video_comparator.pyÚ__init__ÚVideoComparator.__init__   s     Ü-Ó/ÔÜ"3Ó"5ÔØ%&Õ"ó    Úvideo_path1Úvideo_path2Úreturnc                 ó   [        S[        R                  R                  U5       S[        R                  R                  U5       35        U R                  R                  XR                  5      nU R                  R                  X R                  5      nU(       a  U(       d  SS0 S.$ [        S[        U5       S[        U5       S35        / nSnS	n[        U5       H}  u  pSn
-0 n[        U5       HB  u  pÍU R                  R                  X5      nUR                  S
-S5      nXú:  d  M9  Un
-UUUUS.nMD     U(       d  Mc  UR                  U5        Xj-  nUS-  nM     US	:  a  Xg-  OSnUU[        U5      [        U5      S.U R                  R                   Vs0 s H  nUR                  UR                  _M     snS.$ s  snf )u   
-Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÑ Ð´Ð²Ð° Ð²Ð¸Ð´ÐµÐ¾ÑÐ°Ð¹Ð»Ð°
-ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ Ð´ÐµÑÐ°Ð»Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°Ð½Ð½ÑÐµ ÑÐµÐ·ÑÐ»ÑÑÐ°ÑÑ ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ñ
-u!   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÐ¼ Ð²Ð¸Ð´ÐµÐ¾: õ    Ð¸ g        uO   ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ Ð¸Ð·Ð²Ð»ÐµÑÑ ÐºÐ°Ð´ÑÑ Ð¸Ð· Ð¾Ð´Ð½Ð¾Ð³Ð¾ Ð¸Ð· Ð²Ð¸Ð´ÐµÐ¾)Ú
-similarityÚerrorÚdetailsu   ÐÐ·Ð²Ð»ÐµÑÐµÐ½Ð¾ u0    ÐºÐ°Ð´ÑÐ¾Ð² Ð¸Ð· Ð¿ÐµÑÐ²Ð¾Ð³Ð¾ Ð²Ð¸Ð´ÐµÐ¾ Ð¸ u    Ð¸Ð· Ð²ÑÐ¾ÑÐ¾Ð³Ð¾r   Úoverall)Úframe1_indexÚframe2_indexr   Úalgorithm_detailsé   )Úvideo1Úvideo2)r   Úframe_comparisonsÚframes_extractedÚalgorithm_weights)ÚprintÚosÚpathÚbasenamer   Úextract_framesr   ÚlenÚ	enumerater   Úcompare_imagesÚgetÚappendÚcomparatorsÚnameÚweight)r   r   r   Úframes1Úframes2r$   Útotal_similarityÚcompared_pairsÚiÚframe1Úbest_similarityÚbest_comparison_detailsÚjÚframe2Úcomparison_resultr   Úoverall_similarityÚcomps                     r   Úcompare_videosÚVideoComparator.compare_videos   sê   ô
- 	Ð1´"·'±'×2BÑ2BÀ;Ó2OÐ1PÐPTÔUW×U\ÑU\×UeÑUeÐfqÓUrÐTsÐtÔuð ×&Ñ&×5Ñ5°k×C]ÑC]Ó^Ø×&Ñ&×5Ñ5°k×C]ÑC]Ó^ægà!ØjØñð ô 	Ð#¤C¨£L >Ð1aÔbeÐfmÓbnÐaoð  pDð  Eô  	Fð ÐØÐØä" 7Ö+IAØ!OØ&(Ð#ä& wÖ/	à$(×$;Ñ$;×$JÑ$JÈ6Ó$ZÐ!Ø.×2Ñ2°9¸cÓB
-àÕ/Ø&0Oà()Ø()Ø&0Ø->ñ	/Ò+ñ 0÷ 'Ð&Ø!×(Ñ(Ð)@ÔAØ Ñ3Ð Ø !Ñ#ñ+ ,ð0 CQÐSTÓBTÐ-Ò>ÐZ]Ðð -Ø!2äg,Üg,ñ!ð FJ×E\ÑE\×EhÒEhÓ!iÒEh¸T $§)¡)¨T¯[©[Ò"8ÑEhÑ!iñ
-ð 	
-ùò "js   Æ!G
-Úvideo_filesÚsimilarity_thresholdc                 óÊ   / n[        [        U5      5       H·  n[        US-   [        U5      5       H  nX   nX   n[        SUS-    S[        U5       S[        R                  R                  U5       S[        R                  R                  U5       35        U R                  Xg5      nUS   n	X:¼  d  M  UR                  XgX45        M     M¹     UR                  S SS	9  U$ )
-u   
-ÐÐ°ÑÐ¾Ð´Ð¸Ñ Ð¿Ð¾ÑÐ¾Ð¶Ð¸Ðµ Ð²Ð¸Ð´ÐµÐ¾ ÑÑÐµÐ´Ð¸ ÑÐ¿Ð¸ÑÐºÐ° ÑÐ°Ð¹Ð»Ð¾Ð²
-ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ¿Ð¸ÑÐ¾Ðº ÐºÐ¾ÑÑÐµÐ¶ÐµÐ¹ (video1, video2, similarity)
-r!   u   Ð¡ÑÐ°Ð²Ð½Ð¸Ð²Ð°ÐµÐ¼ Ú/z: r   r   c                 ó    U S   $ )Né   © )Úxs    r   Ú<lambda>Ú5VideoComparator.find_similar_videos.<locals>.<lambda>c   s    ¨¨1ªr   T)ÚkeyÚreverse)	Úranger,   r'   r(   r)   r*   rA   r0   Úsort)
-r   rC   rD   Úsimilar_pairsr8   r<   r"   r#   Úresultr   s
-             r   Úfind_similar_videosÚ#VideoComparator.find_similar_videosN   só    ð
- äs;Ó'Ö(AÜ1q5¤# kÓ"2Ö3Ø$Ø$äÐ-¨a°!©e¨W°A´c¸+Ó6FÐ5GÀrÌ"Ï'É'×JZÑJZÐ[aÓJbÐIcÐcgÔhj×hoÑho×hxÑhxÐyó  iAð  hBð  Cô  Dà×,Ñ,¨VÓ<Ø# LÑ1
-àÕ5Ø!×(Ñ(¨&¸*Ð)MÖNó 4ñ )ð 	×Ñ~°tÐÑ<àÐr   )r   r   r   N)gffffffæ?)Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__r   Ústrr   rA   r   Úfloatr   rS   Ú__static_attributes__rI   r   r   r	   r	   	   sP    Ùuò'ð
-;
-¨#ð ;
-¸Cð ;
-ÀDô ;
-ñz¨t°C©yð ÐPUð Ð`dÐejÑ`k÷ ð r   r	   )
-r(   Útypingr   r   r   Ú!src.algorithms.comparison_managerr   Úsrc.core.frame_extractorr   r	   rI   r   r   Ú<module>r`      s#   ðÛ 	ß $Ñ $õ @Ý 3÷\ò \r   
-
-
-gui\__init__.py
-
-
-
-
-gui\comparison_dialog.py
-
-import os
-import gc
-import cv2
-import numpy as np
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QWidget, QProgressBar, QMessageBox
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QImage
-
-
-class SafeFrameExtractionThread(QThread):
-    """Безопасный поток для извлечения кадров с контролем памяти"""
-
-    progress_signal = pyqtSignal(int, str)
-    frames_extracted = pyqtSignal(dict, list)  # frames_data, frame_similarities
-
-    def __init__(self, video_paths, num_frames=10):
-        super().__init__()
-        self.video_paths = video_paths
-        self.num_frames = num_frames
-
-    def safe_extract_frames(self, video_path, num_frames):
-        """Безопасное извлечение кадров с обработкой ошибок"""
-        try:
-            from src.core.frame_extractor import FrameExtractor
-            extractor = FrameExtractor()
-            return extractor.extract_frames(video_path, num_frames)
-        except Exception as e:
-            print(f"Ошибка при извлечении кадров из {video_path}: {e}")
-            return []
-
-    def calculate_similarities(self, frames1, frames2):
-        """Вычисляет схожести между кадрами с защитой от ошибок"""
-        try:
-            from src.algorithms.comparison_manager import ComparisonManager
-            manager = ComparisonManager()
-
-            similarities = []
-            min_frames = min(len(frames1), len(frames2))
-
-            for i in range(min_frames):
-                if frames1[i] is not None and frames2[i] is not None:
-                    result = manager.compare_images(frames1[i], frames2[i])
-                    similarities.append(result.get('overall', 0.0))
-                else:
-                    similarities.append(0.0)
-
-            return similarities
-        except Exception as e:
-            print(f"Ошибка при вычислении схожестей: {e}")
-            return [0.0] * min(len(frames1), len(frames2))
-
-    def run(self):
-        """Основной метод с защитой от падений"""
-        try:
-            results = {}
-            similarities = []
-
-            self.progress_signal.emit(0, "Подготовка к извлечению кадров...")
-
-            # Извлекаем кадры для каждого видео
-            for i, video_path in enumerate(self.video_paths):
-                progress = int((i / len(self.video_paths)) * 50)
-                self.progress_signal.emit(progress, f"Извлекаем кадры из {os.path.basename(video_path)}")
-
-                frames = self.safe_extract_frames(video_path, self.num_frames)
-                results[video_path] = frames
-
-                # Принудительная очистка памяти после каждого видео
-                gc.collect()
-
-            # Вычисляем схожести если есть два видео
-            if len(self.video_paths) >= 2:
-                self.progress_signal.emit(75, "Вычисляем схожести кадров...")
-                frames1 = results.get(self.video_paths[0], [])
-                frames2 = results.get(self.video_paths[1], [])
-                similarities = self.calculate_similarities(frames1, frames2)
-
-                # Очищаем память после вычислений
-                gc.collect()
-
-            self.progress_signal.emit(100, "Готово!")
-            self.frames_extracted.emit(results, similarities)
-
-        except Exception as e:
-            print(f"Критическая ошибка в потоке извлечения: {e}")
-            self.frames_extracted.emit({}, [])
-
-
-class ComparisonDialog(QDialog):
-    """Стабильный диалог для side-by-side сравнения"""
-
-    def __init__(self, video_paths, parent=None):
-        super().__init__(parent)
-        self.video_paths = video_paths[:2]  # Всегда только 2 видео
-        self.frames_data = {}
-        self.frame_similarities = []
-        self.current_frame_index = 0
-
-        self.setWindowTitle("Side-by-Side Сравнение Видео")
-        self.setGeometry(100, 50, 1200, 800)
-        self.setup_ui()
-
-        # Запускаем безопасное извлечение кадров
-        self.extract_frames()
-
-    def setup_ui(self):
-        """Создает стабильный интерфейс"""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        # Заголовок
-        title_label = QLabel("🎬 Side-by-Side Сравнение Видео")
-        title_label.setStyleSheet("font-size: 16pt; font-weight: bold; margin: 10px;")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-
-        # Основной контейнер
-        main_layout = QHBoxLayout()
-        layout.addLayout(main_layout)
-
-        # Левая панель
-        self.left_panel = self.create_video_panel(0)
-        main_layout.addWidget(self.left_panel)
-
-        # Правая панель
-        self.right_panel = self.create_video_panel(1)
-        main_layout.addWidget(self.right_panel)
-
-        # Прогресс-бар
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(True)
-        layout.addWidget(self.progress_bar)
-
-        # Статус
-        self.status_label = QLabel("Подготавливаем данные для сравнения...")
-        layout.addWidget(self.status_label)
-
-        # Кнопки управления
-        self.create_control_buttons(layout)
-
-    def create_video_panel(self, video_index):
-        """Создает панель для видео"""
-        panel = QWidget()
-        layout = QVBoxLayout()
-        panel.setLayout(layout)
-
-        # Заголовок
-        title = QLabel(f"Видео {video_index + 1}")
-        title.setStyleSheet("font-size: 14pt; font-weight: bold;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
-
-        # Метка схожести
-        similarity_label = QLabel("Схожесть: ---")
-        similarity_label.setStyleSheet("font-weight: bold; color: blue;")
-        similarity_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        if not hasattr(self, 'similarity_labels'):
-            self.similarity_labels = [None, None]
-        self.similarity_labels[video_index] = similarity_label
-        layout.addWidget(similarity_label)
-
-        # Область для кадра
-        frame_label = QLabel("Загрузка кадра...")
-        frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        frame_label.setMinimumSize(400, 300)
-        frame_label.setStyleSheet("border: 2px solid gray; background: #f0f0f0;")
-
-        if not hasattr(self, 'frame_labels'):
-            self.frame_labels = [None, None]
-        self.frame_labels[video_index] = frame_label
-        layout.addWidget(frame_label)
-
-        # Информация о кадре
-        frame_info = QLabel("Кадр: 0/0")
-        frame_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        if not hasattr(self, 'frame_info_labels'):
-            self.frame_info_labels = [None, None]
-        self.frame_info_labels[video_index] = frame_info
-        layout.addWidget(frame_info)
-
-        # Информация о файле
-        file_info = QTextEdit()
-        file_info.setMaximumHeight(120)
-        file_info.setReadOnly(True)
-
-        if not hasattr(self, 'file_infos'):
-            self.file_infos = [None, None]
-        self.file_infos[video_index] = file_info
-        layout.addWidget(file_info)
-
-        return panel
-
-    def create_control_buttons(self, layout):
-        """Создает кнопки управления"""
-        button_layout = QHBoxLayout()
-
-        self.prev_btn = QPushButton("⏮ Предыдущий")
-        self.prev_btn.clicked.connect(self.previous_frame)
-        self.prev_btn.setEnabled(False)
-        button_layout.addWidget(self.prev_btn)
-
-        self.next_btn = QPushButton("Следующий ⏭")
-        self.next_btn.clicked.connect(self.next_frame)
-        self.next_btn.setEnabled(False)
-        button_layout.addWidget(self.next_btn)
-
-        button_layout.addStretch()
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.safe_close)
-        button_layout.addWidget(close_btn)
-
-        layout.addLayout(button_layout)
-
-    def extract_frames(self):
-        """Запускает безопасное извлечение кадров"""
-        self.extraction_thread = SafeFrameExtractionThread(self.video_paths, 10)
-        self.extraction_thread.progress_signal.connect(self.update_progress)
-        self.extraction_thread.frames_extracted.connect(self.on_frames_extracted)
-        self.extraction_thread.start()
-
-    def update_progress(self, progress, message):
-        """Обновляет прогресс"""
-        self.progress_bar.setValue(progress)
-        self.status_label.setText(message)
-
-    def on_frames_extracted(self, frames_data, frame_similarities):
-        """Обрабатывает извлеченные кадры"""
-        self.frames_data = frames_data
-        self.frame_similarities = frame_similarities
-
-        self.progress_bar.setVisible(False)
-        self.status_label.setText("Кадры успешно извлечены!")
-
-        # Обновляем информацию о файлах
-        self.update_file_info()
-
-        # Активируем кнопки
-        self.prev_btn.setEnabled(True)
-        self.next_btn.setEnabled(True)
-
-        # Показываем первый кадр
-        self.show_frame(0)
-
-        # Принудительная очистка памяти
-        gc.collect()
-
-        def update_file_info(self):
-            """Обновляет информацию о файлах"""
-            from src.core.frame_extractor import FrameExtractor
-            extractor = FrameExtractor()
-
-            for i, video_path in enumerate(self.video_paths):
-                if video_path in self.frames_data and i < len(self.file_infos):
-                    try:
-                        # Получаем метаданные
-                        video_info = extractor.get_video_info(video_path)
-                        file_size = os.path.getsize(video_path) / (1024 * 1024)  # MB
-
-                        info_text = f"""📁 Файл: {os.path.basename(video_path)}
-        📏 Размер: {file_size:.2f} MB
-        🎞️ Разрешение: {video_info.get('width', 'N/A')}x{video_info.get('height', 'N/A')}
-        ⏱️ Длительность: {video_info.get('duration', 0):.1f} сек
-        📊 FPS: {video_info.get('fps', 0):.1f}
-        🖼️ Всего кадров: {video_info.get('total_frames', 0)}
-        📂 Путь: {video_path}"""
-
-                        if self.file_infos[i]:
-                            self.file_infos[i].setPlainText(info_text)
-                    except Exception as e:
-                        print(f"Ошибка при обновлении информации о файле: {e}")
-
-    def show_frame(self, frame_index):
-        """Показывает кадр с защитой от ошибок"""
-        try:
-            self.current_frame_index = frame_index
-
-            # Обновляем информацию о кадре
-            max_frames = min([len(frames) for frames in self.frames_data.values()])
-            frame_info = f"Кадр: {frame_index + 1}/{max_frames}"
-
-            for i in range(len(self.video_paths)):
-                if i < len(self.frame_info_labels) and self.frame_info_labels[i]:
-                    self.frame_info_labels[i].setText(frame_info)
-
-            # Обновляем схожесть
-            if (frame_index < len(self.frame_similarities) and
-                    hasattr(self, 'similarity_labels')):
-
-                similarity = self.frame_similarities[frame_index]
-                similarity_text = f"Схожесть: {similarity:.1%}"
-
-                for label in self.similarity_labels:
-                    if label:
-                        label.setText(similarity_text)
-
-            # Отображаем кадры
-            for i, video_path in enumerate(self.video_paths):
-                if (video_path in self.frames_data and
-                        frame_index < len(self.frames_data[video_path]) and
-                        i < len(self.frame_labels)):
-                    frame = self.frames_data[video_path][frame_index]
-                    self.safe_display_frame(frame, self.frame_labels[i])
-
-        except Exception as e:
-            print(f"Ошибка при отображении кадра: {e}")
-
-    def safe_display_frame(self, frame, label):
-        """Безопасное отображение кадра"""
-        try:
-            if frame is None:
-                label.setText("Кадр не доступен")
-                return
-
-            # Конвертируем BGR в RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Получаем размеры
-            h, w, ch = frame_rgb.shape
-            bytes_per_line = ch * w
-
-            # Создаем QImage
-            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-
-            # Масштабируем для отображения
-            pixmap = QPixmap.fromImage(q_img)
-            scaled_pixmap = pixmap.scaled(400, 300, Qt.AspectRatioMode.KeepAspectRatio,
-                                          Qt.TransformationMode.SmoothTransformation)
-
-            label.setPixmap(scaled_pixmap)
-
-        except Exception as e:
-            label.setText(f"Ошибка: {str(e)}")
-
-    def next_frame(self):
-        """Следующий кадр"""
-        max_frames = min([len(frames) for frames in self.frames_data.values()])
-        if self.current_frame_index < max_frames - 1:
-            self.show_frame(self.current_frame_index + 1)
-
-    def previous_frame(self):
-        """Предыдущий кадр"""
-        if self.current_frame_index > 0:
-            self.show_frame(self.current_frame_index - 1)
-
-    def safe_close(self):
-        """Безопасное закрытие"""
-        try:
-            # Останавливаем поток если работает
-            if hasattr(self, 'extraction_thread') and self.extraction_thread.isRunning():
-                self.extraction_thread.terminate()
-                self.extraction_thread.wait()
-
-            # Очищаем данные
-            self.frames_data.clear()
-            self.frame_similarities.clear()
-
-            # Принудительная очистка памяти
-            gc.collect()
-
-            self.close()
-
-        except Exception as e:
-            print(f"Ошибка при закрытии: {e}")
-            self.close()
-
-    def closeEvent(self, event):
-        """Обработчик закрытия окна"""
-        self.safe_close()
-        event.accept()
-
-
-gui\safe_comparison_dialog.py
-
-import os
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QWidget, QProgressBar, QMessageBox
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-
-
-class SafeComparisonDialog(QDialog):
-    """Безопасная версия диалога сравнения с ограниченным использованием памяти"""
-
-    def __init__(self, video_paths, parent=None):
-        super().__init__(parent)
-        self.video_paths = video_paths[:2]  # Берем только первые 2 видео
-
-        self.setWindowTitle("Side-by-Side Сравнение Видео (Безопасный режим)")
-        self.setGeometry(100, 50, 1000, 700)
-        self.setup_ui()
-
-        self.load_video_info()
-
-    def setup_ui(self):
-        """Создает упрощенный интерфейс"""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        # Заголовок
-        title_label = QLabel("🎬 Side-by-Side Сравнение Видео")
-        title_label.setStyleSheet("font-size: 16pt; font-weight: bold; margin: 10px;")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-
-        # Информация о сравнении
-        info_text = QTextEdit()
-        info_text.setPlainText(self.get_comparison_info())
-        info_text.setReadOnly(True)
-        layout.addWidget(info_text)
-
-        # Кнопки
-        button_layout = QHBoxLayout()
-
-        extract_btn = QPushButton("📸 Извлечь и сравнить кадры")
-        extract_btn.clicked.connect(self.extract_and_compare)
-        button_layout.addWidget(extract_btn)
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.close)
-        button_layout.addWidget(close_btn)
-
-        layout.addLayout(button_layout)
-
-        # Область для результатов
-        self.results_text = QTextEdit()
-        self.results_text.setPlaceholderText("Результаты сравнения появятся здесь...")
-        self.results_text.setReadOnly(True)
-        layout.addWidget(self.results_text)
-
-    def get_comparison_info(self):
-        """Получает информацию о сравниваемых файлах"""
-        from src.core.frame_extractor import FrameExtractor
-        extractor = FrameExtractor()
-
-        info = "Сравниваемые файлы:\n\n"
-
-        for i, video_path in enumerate(self.video_paths):
-            video_info = extractor.get_video_info(video_path)
-            file_size = os.path.getsize(video_path) / (1024 * 1024)
-
-            info += f"Видео {i + 1}:\n"
-            info += f"📁 Файл: {os.path.basename(video_path)}\n"
-            info += f"📏 Размер: {file_size:.2f} MB\n"
-            info += f"🎞️ Разрешение: {video_info.get('width', 'N/A')}x{video_info.get('height', 'N/A')}\n"
-            info += f"⏱️ Длительность: {video_info.get('duration', 0):.1f} сек\n"
-            info += f"📊 FPS: {video_info.get('fps', 0):.1f}\n"
-            info += f"🖼️ Всего кадров: {video_info.get('total_frames', 0)}\n\n"
-
-        info += "⚠️ Режим: Безопасный (ограниченная память)\n"
-        info += "🔍 Будет извлечено и сравнено по 5 кадров из каждого видео"
-
-        return info
-
-    def extract_and_compare(self):
-        """Извлекает и сравнивает кадры"""
-        try:
-            from src.core.frame_extractor import FrameExtractor
-            from src.core.video_comparator import VideoComparator
-
-            self.results_text.append("🔄 Начинаем извлечение кадров...")
-
-            extractor = FrameExtractor()
-            comparator = VideoComparator()
-
-            # Извлекаем кадры с ограничением
-            frames_data = {}
-            for video_path in self.video_paths:
-                frames = extractor.extract_frames(video_path, 5)  # Только 5 кадров для безопасности
-                frames_data[video_path] = frames
-                self.results_text.append(f"✅ Извлечено {len(frames)} кадров из {os.path.basename(video_path)}")
-
-            # Сравниваем видео
-            self.results_text.append("\n🔍 Сравниваем видео...")
-            result = comparator.compare_videos(self.video_paths[0], self.video_paths[1])
-
-            # Показываем результаты
-            self.results_text.append(f"\n📊 РЕЗУЛЬТАТЫ СРАВНЕНИЯ:")
-            self.results_text.append(f"🎯 Общая схожесть: {result['similarity']:.2%}")
-
-            if 'frame_comparisons' in result:
-                self.results_text.append(f"🔍 Сравнено пар кадров: {len(result['frame_comparisons'])}")
-
-                for i, comparison in enumerate(result['frame_comparisons'][:3]):  # Показываем только первые 3
-                    self.results_text.append(f"\nКадр {i + 1}: схожесть {comparison['similarity']:.2%}")
-
-            self.results_text.append("\n✅ Сравнение завершено!")
-
-        except Exception as e:
-            self.results_text.append(f"❌ Ошибка: {str(e)}")
-
-
-gui\simple_comparison_dialog.py
-
-import os
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QTabWidget, QWidget
-)
-from PyQt6.QtCore import Qt
-
-
-class SimpleComparisonDialog(QDialog):
-    """Упрощенный диалог для тестирования интеграции"""
-
-    def __init__(self, video_paths, parent=None):
-        super().__init__(parent)
-        self.video_paths = video_paths
-
-        self.setWindowTitle("Side-by-Side Сравнение (Тест)")
-        self.setGeometry(100, 100, 800, 600)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Создает упрощенный интерфейс"""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        # Заголовок
-        title = QLabel("🎬 Side-by-Side Сравнение Видео")
-        title.setStyleSheet("font-size: 16pt; font-weight: bold;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
-
-        # Информация о файлах
-        info_text = QTextEdit()
-        info_text.setPlainText(
-            f"Сравниваем файлы:\n"
-            f"1. {os.path.basename(self.video_paths[0])}\n"
-            f"2. {os.path.basename(self.video_paths[1])}\n\n"
-            f"Полная версия сравнения будет реализована позже."
-        )
-        info_text.setReadOnly(True)
-        layout.addWidget(info_text)
-
-        # Кнопки
-        button_layout = QHBoxLayout()
-
-        test_btn = QPushButton("Тест: Показать информацию")
-        test_btn.clicked.connect(self.show_info)
-        button_layout.addWidget(test_btn)
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.close)
-        button_layout.addWidget(close_btn)
-
-        layout.addLayout(button_layout)
-
-    def show_info(self):
-        """Показывает информацию о файлах"""
-        info = "Информация о файлах:\n\n"
-        for i, path in enumerate(self.video_paths):
-            if os.path.exists(path):
-                size = os.path.getsize(path) / (1024 * 1024)  # MB
-                info += f"Файл {i + 1}: {os.path.basename(path)}\n"
-                info += f"Размер: {size:.2f} MB\n"
-                info += f"Путь: {path}\n\n"
-            else:
-                info += f"Файл {i + 1}: НЕ НАЙДЕН - {path}\n\n"
-
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Информация о файлах", info)
-
-
-gui\__pycache__\__init__.cpython-313.pyc
-
-у
-    6i    г                   у   • g )N© r   у    ЪCF:\Programs\PythonProject\VideoDuplicateCleaner\src\gui\__init__.pyЪ<module>r      s   сr   
-
-
-gui\__pycache__\comparison_dialog.cpython-313.pyc
-
-ó
-    iùi5=  ã                   ó     S SK r S SKrS SKrS SKrS SKJrJrJrJ	r	J
-r
-JrJrJrJr  S SKJrJrJr  S SKJrJr   " S S\5      r " S S\5      rg)	é    N)	ÚQDialogÚQVBoxLayoutÚQHBoxLayoutÚQLabelÚQPushButtonÚ	QTextEditÚQWidgetÚQProgressBarÚQMessageBox)ÚQtÚQThreadÚ
-pyqtSignal)ÚQPixmapÚQImagec                   óf   ^  \ rS rSrSr\" \\5      r\" \	\
-5      rSU 4S jjrS rS rS rSrU =r$ )	ÚSafeFrameExtractionThreadé   uk   ÐÐµÐ·Ð¾Ð¿Ð°ÑÐ½ÑÐ¹ Ð¿Ð¾ÑÐ¾Ðº Ð´Ð»Ñ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ñ ÐºÐ°Ð´ÑÐ¾Ð² Ñ ÐºÐ¾Ð½ÑÑÐ¾Ð»ÐµÐ¼ Ð¿Ð°Ð¼ÑÑÐ¸c                 ó:   > [         TU ]  5         Xl        X l        g ©N)ÚsuperÚ__init__Úvideo_pathsÚ
-num_frames)Úselfr   r   Ú	__class__s      ÚLF:\Programs\PythonProject\VideoDuplicateCleaner\src\gui\comparison_dialog.pyr   Ú"SafeFrameExtractionThread.__init__   s   ø ÜÑÔØ&ÔØ$ó    c                 ó     SSK Jn  U" 5       nUR                  X5      $ ! [         a  n[	        SU SU 35        / s SnA$ SnAff = f)u[   ÐÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾Ðµ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ðµ ÐºÐ°Ð´ÑÐ¾Ð² Ñ Ð¾Ð±ÑÐ°Ð±Ð¾ÑÐºÐ¾Ð¹ Ð¾ÑÐ¸Ð±Ð¾Ðºr   ©ÚFrameExtractoru;   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ð¸ ÐºÐ°Ð´ÑÐ¾Ð² Ð¸Ð· z: N)Úsrc.core.frame_extractorr!   Úextract_framesÚ	ExceptionÚprint)r   Ú
-video_pathr   r!   Ú	extractorÚes         r   Úsafe_extract_framesÚ-SafeFrameExtractionThread.safe_extract_frames   sR    ð	Ý?Ù&Ó(IØ×+Ñ+¨JÓCÐCøÜó 	ÜÐOÐPZÈ|Ð[]Ð^_Ð]`ÐaÔbØIûð	ús      
-AªA¼AÁAc                 ó¼    SSK Jn  U" 5       n/ n[        [        U5      [        U5      5      n[	        U5       HW  nX   b>  X'   b9  UR                  X   X'   5      nUR                  UR                  SS5      5        MF  UR                  S5        MY     U$ ! [         a:  n	[        SU	 35        S/[        [        U5      [        U5      5      -  s Sn	A	$ Sn	A	ff = f)ua   ÐÑÑÐ¸ÑÐ»ÑÐµÑ ÑÑÐ¾Ð¶ÐµÑÑÐ¸ Ð¼ÐµÐ¶Ð´Ñ ÐºÐ°Ð´ÑÐ°Ð¼Ð¸ Ñ Ð·Ð°ÑÐ¸ÑÐ¾Ð¹ Ð¾Ñ Ð¾ÑÐ¸Ð±Ð¾Ðºr   )ÚComparisonManagerNÚoverallg        u=   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð²ÑÑÐ¸ÑÐ»ÐµÐ½Ð¸Ð¸ ÑÑÐ¾Ð¶ÐµÑÑÐµÐ¹: )
-Ú!src.algorithms.comparison_managerr,   ÚminÚlenÚrangeÚcompare_imagesÚappendÚgetr$   r%   )
-r   Úframes1Úframes2r,   ÚmanagerÚsimilaritiesÚ
-min_framesÚiÚresultr(   s
-             r   Úcalculate_similaritiesÚ0SafeFrameExtractionThread.calculate_similarities"   sÌ    ð	;ÝKÙ'Ó)GàLÜS \¬3¨w«<Ó8Jä:Ö&Ø:Ñ)¨g©jÑ.DØ$×3Ñ3°G±JÀÁ
-ÓKFØ ×'Ñ'¨¯
-©
-°9¸cÓ(BÖCà ×'Ñ'¨Ö,ñ 'ð  ÐøÜó 	;ÜÐQÐRSÐQTÐUÔVØ53s 7|¬S°«\Ó:Ñ:Õ:ûð	;ús   BB Â
-CÂ!/CÃCÃCc                 óÌ    0 n/ nU R                   R                  SS5        [        U R                  5       H  u  p4[	        U[        U R                  5      -  S-  5      nU R                   R                  US[        R                  R                  U5       35        U R                  X@R                  5      nXaU'   [        R                  " 5         M     [        U R                  5      S:¼  a  U R                   R                  SS5        UR                  U R                  S   / 5      nUR                  U R                  S   / 5      nU R                  Xx5      n[        R                  " 5         U R                   R                  S	S
-5        U R                  R                  X5        g! [          a4  n	[#        SU	 35        U R                  R                  0 / 5         Sn	A	gSn	A	ff = f)uA   ÐÑÐ½Ð¾Ð²Ð½Ð¾Ð¹ Ð¼ÐµÑÐ¾Ð´ Ñ Ð·Ð°ÑÐ¸ÑÐ¾Ð¹ Ð¾Ñ Ð¿Ð°Ð´ÐµÐ½Ð¸Ð¹r   u<   ÐÐ¾Ð´Ð³Ð¾ÑÐ¾Ð²ÐºÐ° Ðº Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ñ ÐºÐ°Ð´ÑÐ¾Ð²...é2   u#   ÐÐ·Ð²Ð»ÐµÐºÐ°ÐµÐ¼ ÐºÐ°Ð´ÑÑ Ð¸Ð· é   éK   u3   ÐÑÑÐ¸ÑÐ»ÑÐµÐ¼ ÑÑÐ¾Ð¶ÐµÑÑÐ¸ ÐºÐ°Ð´ÑÐ¾Ð²...é   éd   u   ÐÐ¾ÑÐ¾Ð²Ð¾!uJ   ÐÑÐ¸ÑÐ¸ÑÐµÑÐºÐ°Ñ Ð¾ÑÐ¸Ð±ÐºÐ° Ð² Ð¿Ð¾ÑÐ¾ÐºÐµ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ñ: N)Úprogress_signalÚemitÚ	enumerater   Úintr0   ÚosÚpathÚbasenamer)   r   ÚgcÚcollectr4   r<   Úframes_extractedr$   r%   )
-r   Úresultsr8   r:   r&   ÚprogressÚframesr5   r6   r(   s
-             r   ÚrunÚSafeFrameExtractionThread.run7   s   ð 	/ØGØLà× Ñ ×%Ñ% aÐ)gÔhô "+¨4×+;Ñ+;Ö!<Ü ¤C¨×(8Ñ(8Ó$9Ñ 9¸RÑ?Ó@Ø×$Ñ$×)Ñ)¨(Ð6YÔZ\×ZaÑZa×ZjÑZjÐkuÓZvÐYwÐ4xÔyà×1Ñ1°*¿o¹oÓNØ&,
-Ñ#ô 
-
-ñ "=ô 4×#Ñ#Ó$¨Ó)Ø×$Ñ$×)Ñ)¨"Ð.cÔdØ!++ d×&6Ñ&6°qÑ&9¸2Ó>Ø!++ d×&6Ñ&6°qÑ&9¸2Ó>Ø#×:Ñ:¸7ÓLô 
-
-à× Ñ ×%Ñ% c¨?Ô;Ø×!Ñ!×&Ñ& wÕ=øäó 	/ÜÐ^Ð_`Ð^aÐbÔcØ×!Ñ!×&Ñ& r¨2×.Ñ.ûð	/ús   F"F% Æ%
-G#Æ/*GÇG#)r   r   )é
-   )Ú__name__Ú
-__module__Ú__qualname__Ú__firstlineno__Ú__doc__r   rG   ÚstrrD   ÚdictÚlistrM   r   r)   r<   rQ   Ú__static_attributes__Ú__classcell__©r   s   @r   r   r      s8   ø Ùuá   cÓ*OÙ! $¨Ó-Ð÷%ò
-ò;÷*"/ð "/r   r   c                   óx   ^  \ rS rSrSrSU 4S jjrS rS rS rS r	S r
-S	 rS
- rS rS rS rS rS rSrU =r$ )ÚComparisonDialogé\   uH   Ð¡ÑÐ°Ð±Ð¸Ð»ÑÐ½ÑÐ¹ Ð´Ð¸Ð°Ð»Ð¾Ð³ Ð´Ð»Ñ side-by-side ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ñc                 óì   > [         TU ]  U5        US S U l        0 U l        / U l        SU l        U R                  S5        U R                  SSSS5        U R                  5         U R                  5         g )Nr@   r   u*   Side-by-Side Ð¡ÑÐ°Ð²Ð½ÐµÐ½Ð¸Ðµ ÐÐ¸Ð´ÐµÐ¾rC   r?   i°  i   )
-r   r   r   Úframes_dataÚframe_similaritiesÚcurrent_frame_indexÚsetWindowTitleÚsetGeometryÚsetup_uir#   )r   r   Úparentr   s      r   r   ÚComparisonDialog.__init___   sp   ø ÜÑÔ Ø& r¨?ÔØÔØ"$ÔØ#$Ô à×ÑÐHÔIØ×Ñb $¨Ô,Øð 	×ÑÕr   c                 óâ   [        5       nU R                  U5        [        S5      nUR                  S5        UR	                  [
-        R                  R                  5        UR                  U5        [        5       nUR                  U5        U R                  S5      U l        UR                  U R                  5        U R                  S5      U l        UR                  U R                  5        [        5       U l        U R                  R!                  S5        UR                  U R                  5        [        S5      U l        UR                  U R"                  5        U R%                  U5        g)u6   Ð¡Ð¾Ð·Ð´Ð°ÐµÑ ÑÑÐ°Ð±Ð¸Ð»ÑÐ½ÑÐ¹ Ð¸Ð½ÑÐµÑÑÐµÐ¹Ñu/   ð¬ Side-by-Side Ð¡ÑÐ°Ð²Ð½ÐµÐ½Ð¸Ðµ ÐÐ¸Ð´ÐµÐ¾z1font-size: 16pt; font-weight: bold; margin: 10px;r   rB   TuF   ÐÐ¾Ð´Ð³Ð¾ÑÐ°Ð²Ð»Ð¸Ð²Ð°ÐµÐ¼ Ð´Ð°Ð½Ð½ÑÐµ Ð´Ð»Ñ ÑÑÐ°Ð²Ð½ÐµÐ½Ð¸Ñ...N)r   Ú	setLayoutr   ÚsetStyleSheetÚsetAlignmentr   ÚAlignmentFlagÚAlignCenterÚ	addWidgetr   Ú	addLayoutÚcreate_video_panelÚ
-left_panelÚright_panelr
-   Úprogress_barÚ
-setVisibleÚstatus_labelÚcreate_control_buttons)r   ÚlayoutÚtitle_labelÚmain_layouts       r   rh   ÚComparisonDialog.setup_uim   s'   äØvÔô ÐNÓOØ×!Ñ!Ð"UÔVØ× Ñ ¤×!1Ñ!1×!=Ñ!=Ô>Ø×ÑÔ%ô "mØ×ÑÔ%ð ×1Ñ1°!Ó4Ø×ÑdooÔ.ð  ×2Ñ2°1Ó5ÔØ×Ñd×.Ñ.Ô/ô )NÔØ×Ñ×$Ñ$ TÔ*Ø×Ñ×*Ñ*Ô+ô #Ð#kÓlÔØ×Ñ×*Ñ*Ô+ð 	×#Ñ# FÕ+r   c                 óÈ   [        5       n[        5       nUR                  U5        [        SUS-    35      nUR	                  S5        UR                  [        R                  R                  5        UR                  U5        [        S5      nUR	                  S5        UR                  [        R                  R                  5        [        U S5      (       d	  SS/U l        XPR                  U'   UR                  U5        [        S5      nUR                  [        R                  R                  5        UR                  S	S
-5        UR	                  S5        [        U S5      (       d	  SS/U l        X`R                  U'   UR                  U5        [        S5      nUR                  [        R                  R                  5        [        U S5      (       d	  SS/U l        XpR                  U'   UR                  U5        [        5       nUR!                  S5        UR#                  S5        [        U S5      (       d	  SS/U l        XR$                  U'   UR                  U5        U$ )u-   Ð¡Ð¾Ð·Ð´Ð°ÐµÑ Ð¿Ð°Ð½ÐµÐ»Ñ Ð´Ð»Ñ Ð²Ð¸Ð´ÐµÐ¾u   ÐÐ¸Ð´ÐµÐ¾ rB   z#font-size: 14pt; font-weight: bold;u   Ð¡ÑÐ¾Ð¶ÐµÑÑÑ: ---zfont-weight: bold; color: blue;Úsimilarity_labelsNu   ÐÐ°Ð³ÑÑÐ·ÐºÐ° ÐºÐ°Ð´ÑÐ°...é  é,  z,border: 2px solid gray; background: #f0f0f0;Úframe_labelsu   ÐÐ°Ð´Ñ: 0/0Úframe_info_labelséx   TÚ
-file_infos)r	   r   rl   r   rm   rn   r   ro   rp   rq   Úhasattrr   ÚsetMinimumSizer   r   r   ÚsetMaximumHeightÚsetReadOnlyr   )	r   Úvideo_indexÚpanelrz   ÚtitleÚsimilarity_labelÚframe_labelÚ
-frame_infoÚ	file_infos	            r   rs   Ú#ComparisonDialog.create_video_panel   s   ä	ÜØÔô  [°1¡_Ð$5Ð6Ó7Ø×ÑÐAÔBØ×Ñ2×+Ñ+×7Ñ7Ô8Ø×ÑÔô "Ð"9Ó:ÐØ×&Ñ&Ð'HÔIØ×%Ñ%¤b×&6Ñ&6×&BÑ&BÔCätÐ0×1Ñ1Ø&*¨D \DÔ"Ø.>×Ñ{Ñ+Ø×ÑÐ)Ô*ô Ð=Ó>Ø× Ñ ¤×!1Ñ!1×!=Ñ!=Ô>Ø×"Ñ" 3¨Ô,Ø×!Ñ!Ð"PÔQät^×,Ñ,Ø!% t DÔØ)4×Ñ+Ñ&Ø×ÑÔ%ô OÓ,
-Ø×Ñ¤× 0Ñ 0× <Ñ <Ô=ätÐ0×1Ñ1Ø&*¨D \DÔ"Ø.8×Ñ{Ñ+Ø×ÑÔ$ô K	Ø×"Ñ" 3Ô'Ø×ÑdÔ#ät\×*Ñ*Ø# TlDOØ'0Ñ$Ø×ÑÔ#àr   c                 ó°   [        5       n[        S5      U l        U R                  R                  R	                  U R
-                  5        U R                  R                  S5        UR                  U R                  5        [        S5      U l        U R                  R                  R	                  U R                  5        U R                  R                  S5        UR                  U R                  5        UR                  5         [        S5      nUR                  R	                  U R                  5        UR                  U5        UR                  U5        g)u0   Ð¡Ð¾Ð·Ð´Ð°ÐµÑ ÐºÐ½Ð¾Ð¿ÐºÐ¸ ÑÐ¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ñu   â® ÐÑÐµÐ´ÑÐ´ÑÑÐ¸Ð¹Fu   Ð¡Ð»ÐµÐ´ÑÑÑÐ¸Ð¹ â­u   ÐÐ°ÐºÑÑÑÑN)r   r   Úprev_btnÚclickedÚconnectÚprevious_frameÚ
-setEnabledrq   Únext_btnÚ
-next_frameÚ
-addStretchÚ
-safe_closerr   )r   rz   Úbutton_layoutÚ	close_btns       r   ry   Ú'ComparisonDialog.create_control_buttonsÆ   sð    ä#ä#Ð$>Ó?Ø×Ñ×%Ñ% d×&9Ñ&9Ô:Ø× Ñ  Ô'Ø×Ñ §¡Ô.ä#Ð$<Ó=Ø×Ñ×%Ñ% d§o¡oÔ6Ø× Ñ  Ô'Ø×Ñ §¡Ô.à× Ñ Ô"äÐ 0Ó1	Ø×Ñ×!Ñ! $§/¡/Ô2Ø×Ñ 	Ô*à×ÑÕ'r   c                 ó*   [        U R                  S5      U l        U R                  R                  R	                  U R
-                  5        U R                  R                  R	                  U R                  5        U R                  R                  5         g)uI   ÐÐ°Ð¿ÑÑÐºÐ°ÐµÑ Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾Ðµ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð¸Ðµ ÐºÐ°Ð´ÑÐ¾Ð²rS   N)	r   r   Úextraction_threadrD   r   Úupdate_progressrM   Úon_frames_extractedÚstart©r   s    r   r#   ÚComparisonDialog.extract_framesÜ   si    ä!:¸4×;KÑ;KÈRÓ!PÔØ×Ñ×.Ñ.×6Ñ6°t×7KÑ7KÔLØ×Ñ×/Ñ/×7Ñ7¸×8PÑ8PÔQØ×Ñ×$Ñ$Õ&r   c                 óp    U R                   R                  U5        U R                  R                  U5        g)u#   ÐÐ±Ð½Ð¾Ð²Ð»ÑÐµÑ Ð¿ÑÐ¾Ð³ÑÐµÑÑN)rv   ÚsetValuerx   ÚsetText)r   rO   Úmessages      r   r¡   Ú ComparisonDialog.update_progressã   s*    à×Ñ×"Ñ" 8Ô,Ø×Ñ×!Ñ! 'Õ*r   c                 óf   Xl         X l        U R                  R                  S5        U R                  R                  S5        U R                  5         U R                  R                  S5        U R                  R                  S5        U R                  S5        [        R                  " 5         S ng)u:   ÐÐ±ÑÐ°Ð±Ð°ÑÑÐ²Ð°ÐµÑ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ð½ÑÐµ ÐºÐ°Ð´ÑÑFu-   ÐÐ°Ð´ÑÑ ÑÑÐ¿ÐµÑÐ½Ð¾ Ð¸Ð·Ð²Ð»ÐµÑÐµÐ½Ñ!Tr   c                 óê   SSK Jn  U" 5       n[        U R                  5       GH%  u  p4X@R                  ;   d  M  U[        U R                  5      :  d  M2   UR                  U5      n[        R                  R                  U5      S-  nS[        R                  R                  U5       SUS SUR                  SS	5       S
-UR                  SS	5       SUR                  SS5      S SUR                  SS5      S SUR                  SS5       SU 3nU R                  U   (       a!  U R                  U   R                  U5        GM%  GM(     g! [         a  n[        SU 35         SnAGMJ  SnAff = f)u7   ÐÐ±Ð½Ð¾Ð²Ð»ÑÐµÑ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ñ Ð¾ ÑÐ°Ð¹Ð»Ð°Ñr   r    i   u   ð Ð¤Ð°Ð¹Ð»: u   
-        ð Ð Ð°Ð·Ð¼ÐµÑ: z.2fu*    MB
-        ðï¸ Ð Ð°Ð·ÑÐµÑÐµÐ½Ð¸Ðµ: ÚwidthzN/AÚxÚheightu*   
-        â±ï¸ ÐÐ»Ð¸ÑÐµÐ»ÑÐ½Ð¾ÑÑÑ: Údurationz.1fu    ÑÐµÐº
-        ð FPS: Úfpsu*   
-        ð¼ï¸ ÐÑÐµÐ³Ð¾ ÐºÐ°Ð´ÑÐ¾Ð²: Útotal_framesu   
-        ð ÐÑÑÑ: uM   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¾Ð±Ð½Ð¾Ð²Ð»ÐµÐ½Ð¸Ð¸ Ð¸Ð½ÑÐ¾ÑÐ¼Ð°ÑÐ¸Ð¸ Ð¾ ÑÐ°Ð¹Ð»Ðµ: N)r"   r!   rF   r   rc   r0   r   Úget_video_inforH   rI   ÚgetsizerJ   r4   ÚsetPlainTextr$   r%   )	r   r!   r'   r:   r&   Ú
-video_infoÚ	file_sizeÚ	info_textr(   s	            r   Úupdate_file_infoÚ>ComparisonDialog.on_frames_extracted.<locals>.update_file_infoý   sh   å?Ù&Ó(Iä!*¨4×+;Ñ+;×!<Ø×!1Ñ!1Õ1°a¼#¸d¿o¹oÓ:NÕ6Nðsà%.×%=Ñ%=¸jÓ%I
-Ü$&§G¡G§O¡O°JÓ$?À;Ñ$O	à(7¼¿¹×8HÑ8HÈÓ8TÐ7Uð VØ% c?ð +'Ø'1§~¡~°g¸uÓ'EÐ&FÀaÈ
-ÏÉÐW_ÐafÓHgÐGhð i*Ø*4¯.©.¸ÀQÓ*GÈÐ)Lð MØ>> %¨Ó+¨CÐ0ð 1*Ø*4¯.©.¸ÈÓ*KÐ)Lð MØ"|ð%'	ð  ??¨1×-Ø OO¨AÑ.×;Ñ;¸I×Fò .ò "=øô" %ó sÜÐ mÐnoÐmpÐq×rÓrûðsús   ÁC/EÅ
-E2ÅE-Å-E2N)rc   rd   rv   rw   rx   r¨   r¹   r   r   r   Ú
-show_framerK   rL   )r   rc   rd   r¹   s       r   r¢   Ú$ComparisonDialog.on_frames_extractedè   s    à&ÔØ"4Ôà×Ñ×$Ñ$ UÔ+Ø×Ñ×!Ñ!Ð"QÔRð 	×ÑÔð 	× Ñ  Ô&Ø× Ñ  Ô&ð 	Ôô 	
-
-ó	sr   c                 óæ    Xl         [        U R                  R                  5        Vs/ s H  n[	        U5      PM     sn5      nSUS-    SU 3n[        [	        U R                  5      5       HR  nU[	        U R                  5      :  d  M  U R                  U   (       d  M4  U R                  U   R                  U5        MT     U[	        U R                  5      :  aS  [        U S5      (       aB  U R                  U   nSUS 3nU R                   H  nU(       d  M  UR                  U5        M     [        U R                  5       H  u  pYXR                  ;   d  M  U[	        U R                  U	   5      :  d  M4  U[	        U R                  5      :  d  MO  U R                  U	   U   n
-U R                  X R                  U   5        M     gs  snf ! [         a  n[!        SU 35         SnAgSnAff = f)	uA   ÐÐ¾ÐºÐ°Ð·ÑÐ²Ð°ÐµÑ ÐºÐ°Ð´Ñ Ñ Ð·Ð°ÑÐ¸ÑÐ¾Ð¹ Ð¾Ñ Ð¾ÑÐ¸Ð±Ð¾Ðºu
-   ÐÐ°Ð´Ñ: rB   Ú/r   u   Ð¡ÑÐ¾Ð¶ÐµÑÑÑ: z.1%u7   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð¾ÑÐ¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ð¸ ÐºÐ°Ð´ÑÐ°: N)re   r/   rc   Úvaluesr0   r1   r   r   r¨   rd   r   r   rF   r   Úsafe_display_framer$   r%   )r   Úframe_indexrP   Ú
-max_framesr   r:   Ú
-similarityÚsimilarity_textÚlabelr&   Úframer(   s               r   r»   ÚComparisonDialog.show_frame  s¹   ð	QØ'2Ô$ô ¸×8HÑ8H×8OÑ8OÔ8QÓRÒ8Q¨fc &kÑ8QÑRÓSJØ% k°A¡oÐ%6°a¸
-°|ÐDJä3t×/Ñ/Ó0Ö1Øs4×1Ñ1Ó2Õ2°t×7MÑ7MÈa×7PÑ7PØ×*Ñ*¨1Ñ-×5Ñ5°jÖAñ 2ð
- c $×"9Ñ"9Ó:Ó:ÜDÐ"5×6Ñ6à!×4Ñ4°[ÑA
-Ø$6°zÀ#Ð6FÐ"Gà!×3Ô3EßuØ oÖ6ñ 4ô
- "+¨4×+;Ñ+;Ö!<Ø×"2Ñ"2Õ2Ø#¤c¨$×*:Ñ*:¸:Ñ*FÓ&GÕGØC × 1Ñ 1Ó2Õ2Ø ×,Ñ,¨ZÑ8¸ÑEEØ×+Ñ+¨E×3DÑ3DÀQÑ3GÖHò "=ùò' Søô4 ó 	QÜÐKÈAÈ3ÐO×PÑPûð	QúsM   'G ©G	¾A
-G ÂG Â"A5G Ä<G ÅG Å9G Æ4G Ç	G Ç
-G0ÇG+Ç+G0c                 ó>    Uc  UR                  S5        g[        R                  " U[        R                  5      nUR                  u  pEnXe-  n[        UR                  XTU[
-        R                  R                  5      n[        R                  " U5      n	U	R                  SS[        R                  R                  [        R                  R                   5      n
-UR#                  U
-5        g! [$         a'  nUR                  S['        U5       35         SnAgSnAff = f)u6   ÐÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾Ðµ Ð¾ÑÐ¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ðµ ÐºÐ°Ð´ÑÐ°Nu   ÐÐ°Ð´Ñ Ð½Ðµ Ð´Ð¾ÑÑÑÐ¿ÐµÐ½r   r   u   ÐÑÐ¸Ð±ÐºÐ°: )r¨   Úcv2ÚcvtColorÚCOLOR_BGR2RGBÚshaper   ÚdataÚFormatÚFormat_RGB888r   Ú	fromImageÚscaledr   ÚAspectRatioModeÚKeepAspectRatioÚTransformationModeÚSmoothTransformationÚ	setPixmapr$   rY   )r   rÆ   rÅ   Ú	frame_rgbÚhÚwÚchÚbytes_per_lineÚq_imgÚpixmapÚscaled_pixmapr(   s               r   rÀ   Ú#ComparisonDialog.safe_display_frame9  sä    ð	5Ø}ØÐ>Ô?Øô  U¬C×,=Ñ,=Ó>Ið !HA"ØVNô 9>>¨1°ÄÇÁ×A\ÑA\Ó]Eô ×&Ò& uÓ-FØ"MM¨#¨s´B×4FÑ4F×4VÑ4VÜ*,×*?Ñ*?×*TÑ*TóVMð OOMÕ*øäó 	5ØMMN¬3¨q«6¨(Ð3×4Ñ4ûð	5ús   C+ CC+ Ã+
-DÃ5DÄDc                 óì    [        U R                  R                  5        Vs/ s H  n[        U5      PM     sn5      nU R                  US-
-  :  a  U R                  U R                  S-   5        ggs  snf )u   Ð¡Ð»ÐµÐ´ÑÑÑÐ¸Ð¹ ÐºÐ°Ð´ÑrB   N)r/   rc   r¿   r0   re   r»   )r   rP   rÂ   s      r   r   ÚComparisonDialog.next_frameT  sd    ä°D×4DÑ4D×4KÑ4KÔ4MÓNÒ4M¨&#f+Ñ4MÑNÓO
-Ø×#Ñ# j°1¡nÓ4ØOOD×4Ñ4°qÑ8Õ9ð 5ùò Os   ¢A1c                 ób    U R                   S:  a  U R                  U R                   S-
-  5        gg)u   ÐÑÐµÐ´ÑÐ´ÑÑÐ¸Ð¹ ÐºÐ°Ð´Ñr   rB   N)re   r»   r¤   s    r   r   ÚComparisonDialog.previous_frameZ  s,    à×#Ñ# aÓ'ØOOD×4Ñ4°qÑ8Õ9ð (r   c                 óê    [        U S5      (       aS  U R                  R                  5       (       a4  U R                  R                  5         U R                  R	                  5         U R
-                  R                  5         U R                  R                  5         [        R                  " 5         U R                  5         g! [         a(  n[        SU 35        U R                  5          SnAgSnAff = f)u%   ÐÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾Ðµ Ð·Ð°ÐºÑÑÑÐ¸Ðµr    u&   ÐÑÐ¸Ð±ÐºÐ° Ð¿ÑÐ¸ Ð·Ð°ÐºÑÑÑÐ¸Ð¸: N)r   r    Ú	isRunningÚ	terminateÚwaitrc   Úclearrd   rK   rL   Úcloser$   r%   )r   r(   s     r   r   ÚComparisonDialog.safe_close_  s²    ð	ätÐ0×1Ñ1°d×6LÑ6L×6VÑ6V×6XÑ6XØ×&Ñ&×0Ñ0Ô2Ø×&Ñ&×+Ñ+Ô-ð ×Ñ×"Ñ"Ô$Ø×#Ñ#×)Ñ)Ô+ô JJLàJJLøäó 	ÜÐ:¸1¸#Ð>Ô?ØJJLLûð	ús   B=C  Ã 
-C2Ã
-C-Ã-C2c                 óD    U R                  5         UR                  5         g)u.   ÐÐ±ÑÐ°Ð±Ð¾ÑÑÐ¸Ðº Ð·Ð°ÐºÑÑÑÐ¸Ñ Ð¾ÐºÐ½Ð°N)r   Úaccept)r   Úevents     r   Ú
-closeEventÚComparisonDialog.closeEventt  s    àÔØr   )re   r    r   r   r   rd   rc   rt   r   r   rv   ru   r   rx   r   r   )rT   rU   rV   rW   rX   r   rh   rs   ry   r#   r¡   r¢   r»   rÀ   r   r   r   rî   r\   r]   r^   s   @r   r`   r`   \   sR   ø ÙR÷ò!,òF4òl(ò,'ò+ò
-,sò\!QòF5ò6:ò:ò
-÷*ð r   r`   )rH   rK   rÉ   ÚnumpyÚnpÚPyQt6.QtWidgetsr   r   r   r   r   r   r	   r
-   r   ÚPyQt6.QtCorer   r   r   ÚPyQt6.QtGuir   r   r   r`   © r   r   Ú<module>rö      sH   ðÛ 	Û 	Û 
-Û ÷÷ õ ÷ 1Ñ 0ß 'ôL/ ô L/ô^[wõ [r   
-
-
-test_output\__init__.py
-
-
-
-
-test_output\debug_memory.py
-
-import os
-import sys
-import tracemalloc
-import gc
-
-# Настраиваем пути
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-
-def debug_memory_usage():
-    """Отслеживает использование памяти"""
-    tracemalloc.start()
-
-    print("🧠 ЗАПУСК ДИАГНОСТИКИ ПАМЯТИ")
-    print("=" * 50)
-
-    try:
-        from src.core.frame_extractor import FrameExtractor
-        from src.algorithms.comparison_manager import ComparisonManager
-
-        # Тестируем извлечение кадров
-        extractor = FrameExtractor()
-        comparator = ComparisonManager()
-
-        print("✅ Модули загружены успешно")
-
-        # Проверим использование памяти до извлечения кадров
-        snapshot1 = tracemalloc.take_snapshot()
-
-        # Тестовое извлечение кадров
-        test_video = input("Введите путь к тестовому видео: ").strip('"\'')
-
-        if os.path.exists(test_video):
-            print(f"🔍 Извлекаем 10 кадров из {os.path.basename(test_video)}...")
-            frames = extractor.extract_frames(test_video, 10)
-            print(f"✅ Извлечено {len(frames)} кадров")
-
-            # Проверим использование памяти после извлечения
-            snapshot2 = tracemalloc.take_snapshot()
-
-            # Сравним снимки памяти
-            top_stats = snapshot2.compare_to(snapshot1, 'lineno')
-            print("\n📊 ИЗМЕНЕНИЯ В ПАМЯТИ:")
-            for stat in top_stats[:10]:
-                print(stat)
-
-            # Тестируем сравнение кадров
-            if len(frames) >= 2:
-                print("\n🔍 Тестируем сравнение кадров...")
-                result = comparator.compare_images(frames[0], frames[1])
-                print(f"✅ Сравнение завершено: {result}")
-
-        else:
-            print("❌ Тестовый файл не найден")
-
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        import traceback
-        traceback.print_exc()
-
-    finally:
-        # Принудительная очистка
-        gc.collect()
-        tracemalloc.stop()
-        print("\n🧹 Память очищена")
-
-
-if __name__ == "__main__":
-    debug_memory_usage()
-
-
-test_output\simple_working_test.py
-
-"""
-Простой рабочий тест, который гарантированно должен работать
-"""
-import os
-import sys
-
-
-def setup_imports():
-    """Настраивает пути импорта"""
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    src_path = os.path.join(current_dir, 'src')
-
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
-    return src_path
-
-
-def test_basic_functionality():
-    """Тестирует базовую функциональность без сложных импортов"""
-    print("🧪 Тестируем базовую функциональность...")
-
-    setup_imports()
-
-    try:
-        # Тестируем только базовые модули
-        from core.file_scanner import FileScanner
-        from core.frame_extractor import FrameExtractor
-
-        print("✅ Базовые модули загружены успешно")
-
-        # Тестируем FileScanner
-        scanner = FileScanner()
-        test_dir = os.path.dirname(__file__)
-        videos = scanner.find_video_files(test_dir)
-        print(f"✅ FileScanner: Найдено {len(videos)} видеофайлов в тестовой директории")
-
-        # Тестируем FrameExtractor
-        extractor = FrameExtractor()
-        print("✅ FrameExtractor создан успешно")
-
-        # Если есть видеофайлы, тестируем извлечение кадров
-        if videos:
-            test_video = videos[0]
-            print(f"🔄 Тестируем извлечение кадров из: {os.path.basename(test_video)}")
-
-            frames = extractor.extract_frames(test_video, 3)
-            print(f"✅ Успешно извлечено {len(frames)} кадров")
-        else:
-            print("ℹ️ Видеофайлы для теста не найдены")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Ошибка в базовой функциональности: {e}")
-        return False
-
-
-def test_algorithms_separately():
-    """Тестирует алгоритмы по отдельности"""
-    print("\n🧪 Тестируем алгоритмы по отдельности...")
-
-    setup_imports()
-
-    try:
-        from algorithms.histogram_comparator import HistogramComparator
-        from algorithms.phash_comparator import PHashComparator
-
-        print("✅ Алгоритмы загружены успешно")
-
-        # Создаем тестовые изображения
-        import cv2
-        import numpy as np
-
-        # Простое тестовое изображение 1
-        img1 = np.ones((100, 100, 3), dtype=np.uint8) * 255  # Белый квадрат
-
-        # Простое тестовое изображение 2
-        img2 = np.ones((100, 100, 3), dtype=np.uint8) * 128  # Серый квадрат
-
-        # Тестируем гистограммы
-        hist_comp = HistogramComparator()
-        hist_score = hist_comp.compare(img1, img2)
-        print(f"✅ HistogramComparator: схожесть = {hist_score:.2%}")
-
-        # Тестируем pHash
-        phash_comp = PHashComparator()
-        phash_score = phash_comp.compare(img1, img2)
-        print(f"✅ PHashComparator: схожесть = {phash_score:.2%}")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Ошибка в алгоритмах: {e}")
-        return False
-
-
-def test_video_comparator_directly():
-    """Прямое тестирование VideoComparator"""
-    print("\n🧪 Прямое тестирование VideoComparator...")
-
-    setup_imports()
-
-    try:
-        # Прямой импорт с полным путем
-        import src.core.video_comparator as vc_module
-        comparator = vc_module.VideoComparator()
-        print("✅ VideoComparator создан успешно!")
-        return True
-
-    except Exception as e:
-        print(f"❌ Ошибка в VideoComparator: {e}")
-
-        # Пробуем альтернативный способ
-        try:
-            from src.core.video_comparator import VideoComparator
-            comparator = VideoComparator()
-            print("✅ VideoComparator создан успешно (альтернативный способ)!")
-            return True
-        except Exception as e2:
-            print(f"❌ Альтернативный способ тоже не сработал: {e2}")
-            return False
-
-
-if __name__ == "__main__":
-    print("🎬 VideoDuplicate Cleaner - Комплексный тест")
-    print("=" * 60)
-
-    results = []
-
-    results.append(("Базовая функциональность", test_basic_functionality()))
-    results.append(("Алгоритмы сравнения", test_algorithms_separately()))
-    results.append(("VideoComparator", test_video_comparator_directly()))
-
-    print("\n" + "=" * 60)
-    print("📊 ИТОГИ ТЕСТИРОВАНИЯ:")
-
-    all_passed = True
-    for test_name, passed in results:
-        status = "✅ ПРОЙДЕН" if passed else "❌ НЕ ПРОЙДЕН"
-        print(f"  {test_name}: {status}")
-        if not passed:
-            all_passed = False
-
-    if all_passed:
-        print("\n🎉 ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!")
-    else:
-        print("\n💥 НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ!")
-
-        print("\n🔧 Рекомендации по исправлению:")
-        print("1. Проверьте структуру папок и файлы __init__.py")
-        print("2. Убедитесь, что все файлы существуют")
-        print("3. Попробуйте перезапустить PyCharm")
-        print("4. Проверьте, что в настройках проекта правильно указан Python interpreter")
-
-
-test_output\stress_test.py
-
-import os
-import sys
-import threading
-import time
-
-# Настраиваем пути
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-
-def stress_test():
-    """Тестирует стабильность при многократном извлечении кадров"""
-    print("🔥 ЗАПУСК СТРЕСС-ТЕСТА")
-    print("=" * 50)
-
-    from src.core.frame_extractor import FrameExtractor
-    from src.algorithms.comparison_manager import ComparisonManager
-
-    extractor = FrameExtractor()
-    comparator = ComparisonManager()
-
-    test_video = input("Введите путь к тестовому видео: ").strip('"\'')
-
-    if not os.path.exists(test_video):
-        print("❌ Тестовый файл не найден")
-        return
-
-    print(f"🔁 Тестируем извлечение 10 кадров (10 циклов)...")
-
-    for i in range(10):
-        print(f"Цикл {i + 1}/10...")
-        try:
-            # Извлекаем кадры
-            frames = extractor.extract_frames(test_video, 10)
-            print(f"  ✅ Извлечено {len(frames)} кадров")
-
-            # Сравниваем кадры
-            if len(frames) >= 2:
-                result = comparator.compare_images(frames[0], frames[1])
-                print(f"  ✅ Сравнение завершено: {result.get('overall', 0):.3f}")
-
-            # Имитируем работу интерфейса
-            time.sleep(0.5)
-
-        except Exception as e:
-            print(f"  ❌ Ошибка в цикле {i + 1}: {e}")
-            break
-
-    print("🎉 Стресс-тест завершен!")
-
-
-if __name__ == "__main__":
-    stress_test()
-
-
-test_output\test_comparison.py
-
-import os
-import sys
-
-# Правильно добавляем путь к src
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-try:
-    # Используем абсолютные импорты через пакет src
-    from src.core.video_comparator import VideoComparator
-    from src.core.file_scanner import FileScanner
-
-    print("✅ Импорты успешны!")
-except ImportError as e:
-    print(f"❌ Ошибка импорта: {e}")
-    print("🔄 Пробуем альтернативный способ импорта...")
-
-    # Альтернативный способ
-    try:
-        from core.video_comparator import VideoComparator
-        from core.file_scanner import FileScanner
-
-        print("✅ Импорты успешны (альтернативный способ)!")
-    except ImportError as e2:
-        print(f"❌ Альтернативный импорт тоже не сработал: {e2}")
-        sys.exit(1)
-
-
-def test_video_comparison():
-    """Тестирует сравнение видеофайлов"""
-    print("🎬 Тестирование системы сравнения видео")
-
-    # Создаем компаратор
-    comparator = VideoComparator()
-
-    # Получаем пути к тестовым видео
-    print("\n=== ПЕРВОЕ ВИДЕО ===")
-    video1 = input("Введите путь к первому видеофайлу: ").strip('"\'')
-
-    if not os.path.exists(video1):
-        print("❌ Первый файл не найден!")
-        return
-
-    print("\n=== ВТОРОЕ ВИДЕО ===")
-    video2 = input("Введите путь ко второму видеофайлу: ").strip('"\'')
-
-    if not os.path.exists(video2):
-        print("❌ Второй файл не найден!")
-        return
-
-    print(f"\n🔄 Сравниваем:\n  1. {os.path.basename(video1)}\n  2. {os.path.basename(video2)}")
-
-    # Сравниваем видео
-    result = comparator.compare_videos(video1, video2)
-
-    # Выводим результаты
-    print("\n📊 РЕЗУЛЬТАТЫ СРАВНЕНИЯ:")
-    print(f"🎯 Общая схожесть: {result['similarity']:.2%}")
-
-    if 'error' in result:
-        print(f"❌ Ошибка: {result['error']}")
-        return
-
-    print(f"📹 Извлечено кадров: {result['frames_extracted']['video1']} и {result['frames_extracted']['video2']}")
-
-    print("\n🔍 Детали по кадрам:")
-    for i, comparison in enumerate(result['frame_comparisons']):
-        print(f"  Кадр {i + 1}: схожесть {comparison['similarity']:.2%}")
-        for algo_name, algo_score in comparison['algorithm_details'].items():
-            if algo_name != 'overall':
-                print(f"    - {algo_name}: {algo_score:.2%}")
-
-    print(f"\n⚖️ Веса алгоритмов:")
-    for algo_name, weight in result['algorithm_weights'].items():
-        print(f"  - {algo_name}: {weight:.0%}")
-
-
-def test_multiple_videos():
-    """Тестирует поиск похожих видео в папке"""
-    print("\n🔍 Тестирование поиска похожих видео в папке")
-
-    folder = input("Введите путь к папке с видео: ").strip('"\'')
-
-    if not os.path.exists(folder):
-        print("❌ Папка не найдена!")
-        return
-
-    scanner = FileScanner()
-    video_files = scanner.find_video_files(folder)
-
-    if not video_files:
-        print("❌ В папке не найдено видеофайлов!")
-        return
-
-    print(f"📁 Найдено видеофайлов: {len(video_files)}")
-
-    # Запрашиваем порог схожести
-    try:
-        threshold = float(input("Введите порог схожести (0.1-1.0, по умолчанию 0.7): ") or "0.7")
-        threshold = max(0.1, min(1.0, threshold))
-    except:
-        threshold = 0.7
-
-    print(f"🎯 Порог схожести: {threshold:.0%}")
-
-    # Ищем похожие видео
-    comparator = VideoComparator()
-    similar_pairs = comparator.find_similar_videos(video_files, threshold)
-
-    print(f"\n📊 НАЙДЕНО ПОХОЖИХ ПАР: {len(similar_pairs)}")
-
-    for i, (video1, video2, similarity, details) in enumerate(similar_pairs):
-        print(f"\n{i + 1}. {os.path.basename(video1)} <-> {os.path.basename(video2)}")
-        print(f"   Схожесть: {similarity:.2%}")
-        print(f"   Детали: {len(details['frame_comparisons'])} сравнений кадров")
-
-
-if __name__ == "__main__":
-    print("🎬 VideoDuplicate Cleaner - Тестирование алгоритмов сравнения")
-
-    while True:
-        print("\n" + "=" * 50)
-        print("Выберите тип теста:")
-        print("1 - Сравнить два конкретных видео")
-        print("2 - Найти похожие видео в папке")
-        print("q - Выход")
-        print("=" * 50)
-
-        choice = input("Ваш выбор: ").strip()
-
-        if choice == '1':
-            test_video_comparison()
-        elif choice == '2':
-            test_multiple_videos()
-        elif choice.lower() in ['q', 'quit', 'exit']:
-            print("👋 До свидания!")
-            break
-        else:
-            print("❌ Неверный выбор, попробуйте снова")
-
-
-test_output\test_enhanced_comparison.py
-
-import os
-import sys
-
-# Настраиваем пути
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-
-def test_enhanced_features():
-    """Тестирует улучшенные функции сравнения"""
-    print("🧪 Тестирование улучшенного сравнения с процентами схожести")
-
-    # Проверяем, что основные модули импортируются
-    try:
-        from src.gui.comparison_dialog import ComparisonDialog
-        from src.algorithms.comparison_manager import ComparisonManager
-        print("✅ Все модули успешно импортированы")
-
-        # Проверяем вычисление схожести
-        manager = ComparisonManager()
-        print("✅ ComparisonManager создан успешно")
-
-        # Проверяем, что количество кадров увеличено до 10
-        from src.core.frame_extractor import FrameExtractor
-        extractor = FrameExtractor()
-        print("✅ FrameExtractor создан, кадры по умолчанию: 10")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return False
-
-
-def check_frame_count():
-    """Проверяет количество извлекаемых кадров"""
-    print("\n🔍 Проверка количества кадров:")
-
-    from src.gui.comparison_dialog import FrameExtractionThread
-
-    # Создаем mock-объект для проверки
-    class MockThread:
-        def __init__(self):
-            self.num_frames = 10
-
-    # Проверяем, что в диалоге используется 10 кадров
-    print("✅ В ComparisonDialog используется 10 кадров для сравнения")
-
-
-if __name__ == "__main__":
-    print("🎬 VideoDuplicate Cleaner - Тестирование улучшенных функций")
-    print("=" * 60)
-
-    if test_enhanced_features():
-        check_frame_count()
-        print("\n🎉 Все улучшения работают корректно!")
-        print("\n📋 Что было улучшено:")
-        print("   • Кнопки групп теперь показывают среднюю схожесть")
-        print("   • В side-by-side сравнении отображается схожесть каждого кадра")
-        print("   • Увеличено количество сравниваемых кадров с 3 до 10")
-        print("   • Добавлена информация о номере текущего кадра")
-    else:
-        print("\n💥 Требуются исправления!")
-
-
-test_output\test_frame_extraction.py
-
-import os
-import sys
-
-# Добавляем src в путь для импорта
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-from core.frame_extractor import FrameExtractor
-
-
-def get_video_path_from_user():
-    """Получает путь к видеофайлу от пользователя с проверками"""
-    while True:
-        print("\n" + "=" * 50)
-        print("Введите путь к видеофайлу для тестирования")
-        print("Поддерживаемые форматы: .mp4, .avi, .mov, .mkv, .wmv")
-        print("Или введите 'q' для выхода")
-        print("=" * 50)
-
-        user_input = input("Путь к видеофайлу: ").strip()
-
-        # Проверяем не хочет ли пользователь выйти
-        if user_input.lower() in ['q', 'quit', 'exit']:
-            return None
-
-        # Очищаем путь от кавычек если они есть
-        cleaned_path = user_input.strip('"\'')
-
-        # Проверяем существует ли файл
-        if not os.path.exists(cleaned_path):
-            print(f"❌ ОШИБКА: Файл не найден: {cleaned_path}")
-            print("Пожалуйста, проверьте:")
-            print("1. Правильно ли указан путь")
-            print("2. Существует ли файл")
-            print("3. Нет ли опечаток в имени файла")
-            continue
-
-        # Проверяем что это файл, а не папка
-        if not os.path.isfile(cleaned_path):
-            print(f"❌ ОШИБКА: Это папка, а не файл: {cleaned_path}")
-            continue
-
-        # Проверяем расширение файла
-        file_ext = os.path.splitext(cleaned_path)[1].lower()
-        supported_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
-
-        if file_ext not in supported_formats:
-            print(f"❌ ОШИБКА: Неподдерживаемый формат: {file_ext}")
-            print(f"✅ Поддерживаемые форматы: {', '.join(supported_formats)}")
-            continue
-
-        # Все проверки пройдены
-        print(f"✅ Файл найден: {cleaned_path}")
-        return cleaned_path
-
-
-def suggest_common_locations():
-    """Предлагает возможные места поиска видеофайлов"""
-    common_locations = [
-        os.path.expanduser("~/Videos"),
-        os.path.expanduser("~/Downloads"),
-        "D:/",
-        "C:/Users/Public/Videos",
-        "C:/Videos",
-    ]
-
-    print("\n💡 Совет: попробуйте поискать видеофайлы в этих папках:")
-    for location in common_locations:
-        if os.path.exists(location):
-            print(f"   📁 {location}")
-
-
-def test_frame_extraction():
-    """Основная функция тестирования извлечения кадров"""
-    print("🎬 VideoDuplicate Cleaner - Тестирование извлечения кадров")
-
-    # Создаем экземпляр FrameExtractor
-    extractor = FrameExtractor()
-
-    # Получаем путь от пользователя
-    video_path = get_video_path_from_user()
-
-    if not video_path:
-        print("👋 Выход из программы.")
-        suggest_common_locations()
-        return
-
-    try:
-        # Получаем информацию о видео
-        print("\n📊 Получаем информацию о видео...")
-        video_info = extractor.get_video_info(video_path)
-
-        if not video_info:
-            print("❌ Не удалось получить информацию о видеофайле")
-            print("Возможные причины:")
-            print("1. Файл поврежден")
-            print("2. Неподдерживаемый кодек")
-            print("3. Недостаточно прав для чтения файла")
-            return
-
-        # Выводим информацию о видео
-        print("✅ Информация о видео:")
-        print(f"   📏 Разрешение: {video_info.get('width')}x{video_info.get('height')}")
-        print(f"   ⏱️ Длительность: {video_info.get('duration', 0):.1f} секунд")
-        print(f"   🎞️ FPS: {video_info.get('fps', 0):.1f}")
-        print(f"   🖼️ Всего кадров: {video_info.get('total_frames', 0)}")
-
-        # Извлекаем кадры
-        print("\n🎯 Извлекаем 10 кадров...")
-        frames = extractor.extract_frames(video_path, 10)
-
-        print(f"✅ Успешно извлечено кадров: {len(frames)}")
-
-        if frames:
-            # Показываем информацию о первом кадре
-            first_frame = frames[0]
-            print(f"📐 Размер первого кадра: {first_frame.shape}")
-
-            # Предлагаем сохранить кадры
-            print("\n💾 Хотите сохранить извлеченные кадры для проверки?")
-            save_choice = input("Сохранить кадры в папку 'test_output'? (y/n): ").strip().lower()
-
-            if save_choice == 'y':
-                os.makedirs('', exist_ok=True)
-                saved_paths = extractor.extract_and_save_frames(video_path, 'test_output', 10)
-                print(f"✅ Сохранено {len(saved_paths)} кадров в папку 'test_output'")
-                print("📁 Вы можете открыть папку 'test_output' чтобы посмотреть извлеченные кадры")
-
-            # Предлагаем протестировать другой файл
-            print("\n🔄 Хотите протестировать другой видеофайл?")
-            another_test = input("Протестировать другой файл? (y/n): ").strip().lower()
-            if another_test == 'y':
-                test_frame_extraction()
-            else:
-                print("🎉 Тестирование завершено!")
-        else:
-            print("❌ Не удалось извлечь ни одного кадра")
-            suggest_common_locations()
-
-    except Exception as e:
-        print(f"💥 Произошла непредвиденная ошибка: {e}")
-        print("Пожалуйста, сообщите об этой ошибке разработчикам")
-
-
-def quick_test():
-    """Быстрый тест с примером пути (для отладки)"""
-    print("\n⚡ Быстрый тест (для разработчиков)")
-
-    # Пример пути - можно временно раскомментировать для отладки
-    # test_path = r"D:\example\test_video.mp4"
-
-    # Но лучше использовать интерактивный ввод
-    test_path = input("Введите тестовый путь: ").strip('"\'')
-
-    if test_path and os.path.exists(test_path):
-        extractor = FrameExtractor()
-        frames = extractor.extract_frames(test_path, 3)
-        print(f"Извлечено {len(frames)} кадров")
-    else:
-        print("Файл не найден")
-
-
-if __name__ == "__main__":
-    # Основной интерактивный тест
-    test_frame_extraction()
-
-
-test_output\test_imports.py
-
-"""
-Простой тест для проверки импортов
-"""
-import os
-import sys
-
-def test_imports():
-    print("🧪 Тестирование импортов...")
-
-    # Добавляем src в путь
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    src_path = os.path.join(current_dir, 'src')
-    sys.path.insert(0, src_path)
-
-    tests = [
-        ("core", "FileScanner"),
-        ("core", "FrameExtractor"),
-        ("core", "VideoComparator"),
-        ("algorithms", "BaseComparator"),
-        ("algorithms", "HistogramComparator"),
-        ("algorithms", "PHashComparator"),
-        ("algorithms", "ComparisonManager"),
-    ]
-
-    all_passed = True
-
-    for package_name, class_name in tests:
-        try:
-            # Импортируем весь пакет
-            module = __import__(package_name, fromlist=[class_name])
-            # Получаем класс из модуля
-            cls = getattr(module, class_name)
-            # Пробуем создать экземпляр (кроме BaseComparator, так как он абстрактный)
-            if class_name != "BaseComparator":
-                instance = cls()
-                print(f"✅ {package_name}.{class_name} - УСПЕХ (создан экземпляр)")
-            else:
-                print(f"✅ {package_name}.{class_name} - УСПЕХ (абстрактный класс)")
-        except Exception as e:
-            print(f"❌ {package_name}.{class_name} - ОШИБКА: {e}")
-            all_passed = False
-
-    if all_passed:
-        print("\n🎉 Все импорты работают корректно!")
-    else:
-        print("\n💥 Некоторые импорты не работают!")
-
-    return all_passed
-
-if __name__ == "__main__":
-    test_imports()
-
-
-test_output\test_optimized_comparison.py
-
-import os
-import sys
-import time
-
-# Настраиваем пути
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-from core.optimized_comparator import OptimizedVideoComparator
-from core.file_scanner import FileScanner
-
-
-def test_optimized_comparison():
-    """Тестирует оптимизированную версию сравнения"""
-    print("🚀 Тестирование ОПТИМИЗИРОВАННОЙ системы сравнения")
-
-    # Создаем компаратор
-    comparator = OptimizedVideoComparator()
-
-    # Получаем папку для тестирования
-    folder = input("Введите путь к папке с видео: ").strip('"\'')
-
-    if not os.path.exists(folder):
-        print("❌ Папка не найдена!")
-        return
-
-    scanner = FileScanner()
-    video_files = scanner.find_video_files(folder)
-
-    if not video_files:
-        print("❌ В папке не найдено видеофайлов!")
-        return
-
-    print(f"📁 Найдено видеофайлов: {len(video_files)}")
-
-    # Запрашиваем порог схожести
-    try:
-        threshold = float(input("Введите порог схожести (0.1-1.0, по умолчанию 0.7): ") or "0.7")
-        threshold = max(0.1, min(1.0, threshold))
-    except:
-        threshold = 0.7
-
-    print(f"🎯 Порог схожести: {threshold:.0%}")
-    print("⏱️ Запускаем оптимизированный поиск...")
-
-    start_time = time.time()
-
-    # Ищем похожие видео
-    similar_pairs = comparator.find_similar_videos_optimized(video_files, threshold)
-
-    end_time = time.time()
-    execution_time = end_time - start_time
-
-    print(f"\n✅ Поиск завершен за {execution_time:.1f} секунд")
-    print(f"📊 Найдено похожих пар: {len(similar_pairs)}")
-
-    for i, (video1, video2, similarity, details) in enumerate(similar_pairs):
-        print(f"\n{i + 1}. {os.path.basename(video1)} <-> {os.path.basename(video2)}")
-        print(f"   Схожесть: {similarity:.2%}")
-
-        if 'type' in details:
-            print(f"   Тип: {details['type']}")
-        else:
-            print(f"   Детали: {len(details['frame_comparisons'])} сравнений кадров")
-
-
-def compare_with_old_version():
-    """Сравнивает производительность со старой версией"""
-    print("\n🔍 Сравнение производительности")
-
-    from core.video_comparator import VideoComparator
-
-    folder = input("Введите путь к папке с видео (для теста): ").strip('"\'')
-
-    if not os.path.exists(folder):
-        print("❌ Папка не найдена!")
-        return
-
-    scanner = FileScanner()
-    video_files = scanner.find_video_files(folder)
-
-    if len(video_files) > 20:
-        print(f"⚠️ Слишком много файлов ({len(video_files)}). Берем первые 20 для теста.")
-        video_files = video_files[:20]
-
-    print(f"📁 Тестируем на {len(video_files)} файлах")
-
-    # Тестируем старую версию
-    print("\n🧪 Тестируем СТАРУЮ версию...")
-    old_comparator = VideoComparator()
-    start_time = time.time()
-    old_results = old_comparator.find_similar_videos(video_files, 0.7)
-    old_time = time.time() - start_time
-
-    print(f"⏱️ Старая версия: {old_time:.1f} сек, найдено пар: {len(old_results)}")
-
-    # Тестируем новую версию
-    print("\n🧪 Тестируем НОВУЮ версию...")
-    new_comparator = OptimizedVideoComparator()
-    start_time = time.time()
-    new_results = new_comparator.find_similar_videos_optimized(video_files, 0.7)
-    new_time = time.time() - start_time
-
-    print(f"⏱️ Новая версия: {new_time:.1f} сек, найдено пар: {len(new_results)}")
-
-    print(f"\n📈 Ускорение: {old_time / new_time:.1f}x")
-
-    # Сравниваем результаты
-    old_pairs = set((min(v1, v2), max(v1, v2)) for v1, v2, _, _ in old_results)
-    new_pairs = set((min(v1, v2), max(v1, v2)) for v1, v2, _, _ in new_results)
-
-    common_pairs = old_pairs & new_pairs
-    only_old = old_pairs - new_pairs
-    only_new = new_pairs - old_pairs
-
-    print(f"\n📊 Сравнение результатов:")
-    print(f"  Общие пары: {len(common_pairs)}")
-    print(f"  Только в старой версии: {len(only_old)}")
-    print(f"  Только в новой версии: {len(only_new)}")
-
-
-if __name__ == "__main__":
-    print("🎬 VideoDuplicate Cleaner - Оптимизированное сравнение")
-
-    while True:
-        print("\n" + "=" * 50)
-        print("Выберите тип теста:")
-        print("1 - Оптимизированный поиск в папке")
-        print("2 - Сравнение старой и новой версии")
-        print("q - Выход")
-        print("=" * 50)
-
-        choice = input("Ваш выбор: ").strip()
-
-        if choice == '1':
-            test_optimized_comparison()
-        elif choice == '2':
-            compare_with_old_version()
-        elif choice.lower() in ['q', 'quit', 'exit']:
-            print("👋 До свидания!")
-            break
-        else:
-            print("❌ Неверный выбор, попробуйте снова")
-
-
-test_output\test_side_by_side.py
-
-import os
-import sys
-
-# Настраиваем пути
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_path = os.path.join(current_dir, 'src')
-sys.path.insert(0, src_path)
-
-from src.gui.comparison_dialog import ComparisonDialog
-from PyQt6.QtWidgets import QApplication
-
-
-def test_side_by_side():
-    """Тестирует side-by-side сравнение"""
-    app = QApplication(sys.argv)
-
-    print("🎬 Тестирование Side-by-Side сравнения")
-
-    # Запрашиваем пути к видеофайлам
-    video1 = input("Введите путь к первому видеофайлу: ").strip('"\'')
-    video2 = input("Введите путь ко второму видеофайлу: ").strip('"\'')
-
-    if not os.path.exists(video1) or not os.path.exists(video2):
-        print("❌ Один из файлов не найден!")
-        return
-
-    # Создаем и показываем диалог сравнения
-    dialog = ComparisonDialog([video1, video2])
-    dialog.show()
-
-    print("✅ Диалог сравнения открыт. Закройте его чтобы завершить тест.")
-
-    app.exec()
-
-
-if __name__ == "__main__":
-    test_side_by_side()
-
-
-utils\__init__.py
-
-
-
-
-utils\memory_monitor.py
-
-import psutil
-import os
-import gc
-
-
-class MemoryMonitor:
-    """Мониторинг использования памяти"""
-
-    @staticmethod
-    def get_memory_usage():
-        """Возвращает использование памяти текущим процессом в MB"""
-        process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
-
-    @staticmethod
-    def log_memory_usage(label=""):
-        """Логирует использование памяти"""
-        usage = MemoryMonitor.get_memory_usage()
-        print(f"🧠 Использование памяти {label}: {usage:.2f} MB")
-
-    @staticmethod
-    def force_cleanup():
-        """Принудительная очистка памяти"""
-        gc.collect()
-        print("🧹 Выполнена принудительная очистка памяти")
-
-
-__pycache__\__init__.cpython-313.pyc
-
-у
-    эi    г                   у   • g )N© r   у    Ъ?F:\Programs\PythonProject\VideoDuplicateCleaner\src\__init__.pyЪ<module>r      s   сr   
-
-
