@@ -1,0 +1,66 @@
+Структура папок тома Локальный диск
+Серийный номер тома: 9E4D-ABDE
+F:\PROGRAMS\PYTHONPROJECT\VIDEODUPLICATECLEANER\SRC
+|   main.py
+|   __init__.py
+|   __main__.py
+|   
++---algorithms
+|   |   base_comparator.py
+|   |   comparison_manager.py
+|   |   histogram_comparator.py
+|   |   phash_comparator.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           base_comparator.cpython-313.pyc
+|           comparison_manager.cpython-313.pyc
+|           histogram_comparator.cpython-313.pyc
+|           phash_comparator.cpython-313.pyc
+|           __init__.cpython-313.pyc
+|           
++---core
+|   |   file_scanner.py
+|   |   frame_extractor.py
+|   |   optimized_comparator.py
+|   |   video_comparator.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           file_scanner.cpython-313.pyc
+|           frame_extractor.cpython-313.pyc
+|           optimized_comparator.cpython-313.pyc
+|           video_comparator.cpython-313.pyc
+|           __init__.cpython-313.pyc
+|           
++---gui
+|   |   comparison_dialog.py
+|   |   safe_comparison_dialog.py
+|   |   simple_comparison_dialog.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           comparison_dialog.cpython-313.pyc
+|           safe_comparison_dialog.cpython-313.pyc
+|           simple_comparison_dialog.cpython-313.pyc
+|           __init__.cpython-313.pyc
+|           
++---test_output
+|       debug_memory.py
+|       simple_working_test.py
+|       stress_test.py
+|       test_comparison.py
+|       test_enhanced_comparison.py
+|       test_frame_extraction.py
+|       test_imports.py
+|       test_optimized_comparison.py
+|       test_side_by_side.py
+|       __init__.py
+|       
++---utils
+|       memory_monitor.py
+|       __init__.py
+|       
+\---__pycache__
+        __init__.cpython-313.pyc
+        
