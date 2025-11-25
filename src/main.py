@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
+from PyQt6.QtGui import QIcon
 
 # импорты наших модулей
 from src.core.file_scanner import FileScanner
@@ -166,12 +167,24 @@ class CompareThread(QThread):
 # =============================================================================
 # ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
 # =============================================================================
+def resource_path(relative_path):
+    """Получает абсолютный путь к ресурсу (ДЛЯ БЕЛКИ НА ИКОНКЕ), работает для dev и для PyInstaller"""
+    try:
+        # PyInstaller создаёт временную папку и хранит путь в _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoDuplicate Cleaner")
         self.setGeometry(100, 100, 1000, 800)  # Увеличили высоту окна
+
+        icon_path = resource_path("static/logo.jpg")
+        self.setWindowIcon(QIcon(icon_path))
 
         # Инициализация компонентов
         self.scanner = FileScanner()
@@ -214,8 +227,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         widget.setLayout(layout)
 
-        # Заголовок
-        title_label = QLabel("Поиск похожих видеофайлов в папке")
+        # Заголовок с выделением цветом
+        title_text = "Поиск похожих видеофайлов в папке. "
+        formats_text = "Доступные форматы: .mp4, .avi, .mov, .mkv, .wmv"
+
+        title_label = QLabel()
+        title_label.setTextFormat(Qt.TextFormat.RichText)
+        title_label.setText(
+            f"{title_text}<span style='color: #E67E22; font-weight: bold;'>{formats_text}</span>"
+
+        )
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         layout.addWidget(title_label)
 
