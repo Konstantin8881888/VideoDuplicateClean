@@ -1,10 +1,11 @@
 import os
 from typing import List
+from src.config import Config
 
 
 class FileScanner:
     def __init__(self):
-        self.supported_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
+        self.supported_formats = Config.SUPPORTED_FORMATS
 
     def find_video_files(self, directory: str) -> List[str]:
         """

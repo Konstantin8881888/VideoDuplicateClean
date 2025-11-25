@@ -1,5 +1,6 @@
 import os
 from typing import List, Dict, Tuple
+from src.config import Config
 
 # Абсолютные импорты вместо относительных
 from src.algorithms.comparison_manager import ComparisonManager
@@ -12,7 +13,7 @@ class VideoComparator:
     def __init__(self):
         self.frame_extractor = FrameExtractor()
         self.comparison_manager = ComparisonManager()
-        self.num_frames_to_compare = 5  # Количество кадров для сравнения
+        self.num_frames_to_compare = Config.DEFAULT_FRAMES_TO_COMPARE  # Количество кадров для сравнения
 
     def compare_videos(self, video_path1: str, video_path2: str) -> Dict:
         """
@@ -75,11 +76,14 @@ class VideoComparator:
             'algorithm_weights': {comp.name: comp.weight for comp in self.comparison_manager.comparators}
         }
 
-    def find_similar_videos(self, video_files: List[str], similarity_threshold: float = 0.7) -> List[Tuple]:
+    def find_similar_videos(self, video_files: List[str], similarity_threshold: float = None) -> List[Tuple]:
         """
         Находит похожие видео среди списка файлов
         Возвращает список кортежей (video1, video2, similarity)
         """
+        if similarity_threshold is None:
+            similarity_threshold = Config.SIMILARITY_THRESHOLD
+
         similar_pairs = []
 
         for i in range(len(video_files)):

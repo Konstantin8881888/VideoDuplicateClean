@@ -24,8 +24,8 @@ def test_basic_functionality():
 
     try:
         # Тестируем только базовые модули
-        from core.file_scanner import FileScanner
-        from core.frame_extractor import FrameExtractor
+        from src.core.file_scanner import FileScanner
+        from src.core.frame_extractor import FrameExtractor
 
         print("✅ Базовые модули загружены успешно")
 
@@ -63,8 +63,8 @@ def test_algorithms_separately():
     setup_imports()
 
     try:
-        from algorithms.histogram_comparator import HistogramComparator
-        from algorithms.phash_comparator import PHashComparator
+        from src.algorithms.histogram_comparator import HistogramComparator
+        from src.algorithms.phash_comparator import PHashComparator
 
         print("✅ Алгоритмы загружены успешно")
 

@@ -1,8 +1,9 @@
 from typing import List, Dict
 import numpy as np
-from .base_comparator import BaseComparator
-from .histogram_comparator import HistogramComparator
-from .phash_comparator import PHashComparator
+from src.algorithms.base_comparator import BaseComparator
+from src.algorithms.histogram_comparator import HistogramComparator
+from src.algorithms.phash_comparator import PHashComparator
+from src.config import Config
 
 
 class ComparisonManager:
@@ -13,11 +14,12 @@ class ComparisonManager:
         self.setup_comparators()
 
     def setup_comparators(self):
-        """Настраивает компараторы с весами по умолчанию"""
-        # Веса можно будет настраивать через UI позже
+        """Настраивает компараторы с весами из конфигурации"""
+        weights = Config.ALGORITHM_WEIGHTS
+
         self.comparators = [
-            HistogramComparator(weight=0.4),  # 40%
-            PHashComparator(weight=0.6)  # 60%
+            HistogramComparator(weight=weights.get('Histogram', 0.4)),
+            PHashComparator(weight=weights.get('Perceptual Hash', 0.6))
         ]
 
     def compare_images(self, image1: np.ndarray, image2: np.ndarray) -> Dict[str, float]:
