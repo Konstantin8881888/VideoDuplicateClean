@@ -365,15 +365,47 @@ class MainWindow(QMainWindow):
         layout.addWidget(pairs_label)
 
         # Добавляем пояснение
+        # Создаем контейнер для плашки с крестиком
+        warning_widget = QWidget()
+        warning_layout = QHBoxLayout(warning_widget)
+        warning_layout.setContentsMargins(8, 8, 8, 8)
+
+        # Текст предупреждения
         warning_text = QLabel(
             "💡 <span style='color: #856404; font-size: 9pt;'>"
             "Один и тот же файл может быть в нескольких парах - счётчик показывает уникальные файлы для удаления"
             "</span>"
         )
         warning_text.setWordWrap(True)
-        warning_text.setStyleSheet(
-            "margin: 5px 0px; background-color: #fff3cd; padding: 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
-        layout.addWidget(warning_text)
+        warning_layout.addWidget(warning_text)
+
+        # Кнопка закрытия (крестик)
+        close_btn = QPushButton("×")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                color: #856404;
+                font-weight: bold;
+                font-size: 14pt;
+                border: none;
+                background: transparent;
+                padding: 0px 4px;
+                margin-left: 4px;
+            }
+            QPushButton:hover {
+                background-color: #ffeaa7;
+                border-radius: 3px;
+            }
+        """)
+        close_btn.setFixedSize(20, 20)
+        close_btn.clicked.connect(warning_widget.hide)
+        warning_layout.addWidget(close_btn)
+
+        # Стиль для всей плашки
+        warning_widget.setStyleSheet(
+            "background-color: #fff3cd; border-radius: 4px; border: 1px solid #ffeaa7;"
+        )
+
+        layout.addWidget(warning_widget)
 
 
         # ПРОКРУЧИВАЕМАЯ ОБЛАСТЬ ДЛЯ КНОПОК ПАР
