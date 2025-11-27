@@ -1,5 +1,7 @@
 import os
 import sys
+import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
@@ -361,6 +363,18 @@ class MainWindow(QMainWindow):
         pairs_label = QLabel("🎯 Найденные пары для сравнения:")
         pairs_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         layout.addWidget(pairs_label)
+
+        # Добавляем пояснение
+        warning_text = QLabel(
+            "💡 <span style='color: #856404; font-size: 9pt;'>"
+            "Один и тот же файл может быть в нескольких парах - счётчик показывает уникальные файлы для удаления"
+            "</span>"
+        )
+        warning_text.setWordWrap(True)
+        warning_text.setStyleSheet(
+            "margin: 5px 0px; background-color: #fff3cd; padding: 8px; border-radius: 4px; border: 1px solid #ffeaa7;")
+        layout.addWidget(warning_text)
+
 
         # ПРОКРУЧИВАЕМАЯ ОБЛАСТЬ ДЛЯ КНОПОК ПАР
         scroll_area = QScrollArea()
@@ -833,23 +847,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             return f"📁 {filename[:20]}\n📏 {size_mb:.1f}MB\n⚠️ Ошибка"
 
+    # def toggle_mark_deletion(self, file_path: str, marked: bool):
+    #     """Отмечает/снимает отметку файла для удаления БЕЗ немедленного обновления UI"""
+    #     try:
+    #         if marked:
+    #             self.marked_for_deletion.add(file_path)
+    #         else:
+    #             self.marked_for_deletion.discard(file_path)
+    #
+    #         # ОТЛАДКА: логируем изменение
+    #         print(f"DEBUG: toggle_mark_deletion - файлов отмечено: {len(self.marked_for_deletion)}")
+    #
+    #         # Обновляем UI с небольшой задержкой чтобы избежать накопления вызовов
+    #         from PyQt6.QtCore import QTimer
+    #         QTimer.singleShot(10, self.update_deletion_ui)
+    #
+    #     except Exception as e:
+    #         print(f"Ошибка в toggle_mark_deletion: {e}")
+
     def toggle_mark_deletion(self, file_path: str, marked: bool):
-        """Отмечает/снимает отметку файла для удаления БЕЗ немедленного обновления UI"""
-        try:
-            if marked:
-                self.marked_for_deletion.add(file_path)
-            else:
-                self.marked_for_deletion.discard(file_path)
+        """Ведём счётчик сколько чекбоксов отмечено для файла"""
+        if not hasattr(self, 'file_reference_count'):
+            self.file_reference_count = {}
 
-            # ОТЛАДКА: логируем изменение
-            print(f"DEBUG: toggle_mark_deletion - файлов отмечено: {len(self.marked_for_deletion)}")
+        if marked:
+            self.file_reference_count[file_path] = self.file_reference_count.get(file_path, 0) + 1
+        else:
+            self.file_reference_count[file_path] = self.file_reference_count.get(file_path, 1) - 1
 
-            # Обновляем UI с небольшой задержкой чтобы избежать накопления вызовов
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(10, self.update_deletion_ui)
+        # Файл отмечен если есть ХОТЯ БЫ ОДНА отметка
+        if self.file_reference_count.get(file_path, 0) > 0:
+            self.marked_for_deletion.add(file_path)
+        else:
+            self.marked_for_deletion.discard(file_path)
 
-        except Exception as e:
-            print(f"Ошибка в toggle_mark_deletion: {e}")
+        self.update_deletion_ui()
 
     def update_deletion_ui(self):
         """Обновляет UI управления удалением с подсчетом размера"""
@@ -1034,16 +1066,16 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'compare_btn'):
                 self.compare_btn.setEnabled(bool(self.video1_path and self.video2_path))
 
-            # Обновляем UI удаления и заносим запись в лог
-            self.update_deletion_ui()
-            self.create_pair_buttons(self.current_pairs)
-            try:
-                if hasattr(self, 'compare_results') and self.compare_results:
-                    self.compare_results.append(f"\n🗑️ Файл удалён: {os.path.basename(norm_path)}")
-            except Exception:
-                pass
+                # Обновляем UI удаления и заносим запись в лог
+                self.update_deletion_ui()
+                self.create_pair_buttons(self.current_pairs)
+                try:
+                    if hasattr(self, 'compare_results') and self.compare_results:
+                        self.compare_results.append(f"\n🗑️ Файл удалён: {os.path.basename(norm_path)}")
+                except Exception:
+                    pass
 
-            self.log_text.append(f"🗑️ Файл удалён: {os.path.basename(norm_path)}")
+                self.log_text.append(f"🗑️ Файл удалён: {os.path.basename(norm_path)}")
 
         except Exception as e:
             print(f"Ошибка в on_video_deleted: {e}")
