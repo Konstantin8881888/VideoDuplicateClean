@@ -155,7 +155,7 @@ class ComparisonDialog(QDialog):
         self.setup_ui()
 
         # Запускаем безопасное извлечение кадров
-        self.extract_frames()
+        self.extract_frames_new()
 
     # -----------------------
     # Вспомогательные методы
@@ -396,7 +396,7 @@ class ComparisonDialog(QDialog):
 
         layout.addLayout(button_layout)
 
-    def extract_frames(self):
+    def extract_frames_new(self):
         """Запускает безопасное извлечение кадров"""
         from src.config import Config
         num = getattr(Config, "DEFAULT_FRAMES_TO_COMPARE", 10)
