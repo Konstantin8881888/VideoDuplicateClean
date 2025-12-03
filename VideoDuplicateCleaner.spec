@@ -28,6 +28,7 @@ exe = EXE(
     a.datas,
     [],
     name='VideoDuplicateCleaner',
+    icon='static/logo.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
