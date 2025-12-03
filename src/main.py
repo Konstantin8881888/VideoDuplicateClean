@@ -1,12 +1,14 @@
 import os
 import sys
+import json
 import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox
+    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog
 )
+
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
 from PyQt6.QtGui import QIcon
 
@@ -14,6 +16,7 @@ from PyQt6.QtGui import QIcon
 from src.core.file_scanner import FileScanner
 from src.core.frame_extractor import FrameExtractor
 from src.core.optimized_comparator import OptimizedVideoComparator
+from src.core.video_comparator import VideoComparator
 from src.config import Config
 
 
@@ -1563,12 +1566,104 @@ class MainWindow(QMainWindow):
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
 # =============================================================================
 
+def check_license() -> bool:
+    """Проверяет принятие лицензии, возвращает True если принята"""
+    config_file = "user_settings.json"
+
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                settings = json.load(f)
+                if settings.get('license_accepted', False):
+                    return True
+        except:
+            pass
+
+    # Создаем кастомное диалоговое окно
+    dialog = QDialog()
+    dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
+    dialog.setGeometry(100, 100, 600, 400)  # ← РАЗМЕР ОКНА
+
+    layout = QVBoxLayout(dialog)
+
+    # Заголовок
+    title_label = QLabel("Пожалуйста, ознакомьтесь с лицензионным соглашением:")
+    title_label.setStyleSheet("font-weight: bold; font-size: 12pt; margin: 10px;")
+    layout.addWidget(title_label)
+
+    # Поле с текстом лицензии (прокручиваемое)
+    license_text = QTextEdit()
+    license_text.setReadOnly(True)
+    license_text.setPlainText("""
+    ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
+
+    1. Программа предоставляется "как есть"
+    2. Автор не несёт ответственности за удалённые файлы
+    3. Вы используете программу на свой страх и риск
+    4. Перед удалением делайте бэкапы важных данных
+    5. Вы не можете распространять программу без разрешения автора
+    6. Коммерческое использование запрещено
+    7. Все права принадлежат автору
+
+    Полный текст лицензии будет доступен в следующих версиях.
+
+    Нажимая "Принимаю", вы соглашаетесь с условиями использования.
+    """)
+    layout.addWidget(license_text)
+
+    # Кнопки
+    button_layout = QHBoxLayout()
+
+    accept_btn = QPushButton("✅ Принимаю")
+    accept_btn.clicked.connect(lambda: dialog.accept())
+    accept_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px; font-weight: bold;")
+
+    reject_btn = QPushButton("❌ Не принимаю")
+    reject_btn.clicked.connect(lambda: dialog.reject())
+    reject_btn.setStyleSheet("background-color: #f44336; color: white; padding: 8px; font-weight: bold;")
+
+    button_layout.addWidget(accept_btn)
+    button_layout.addWidget(reject_btn)
+    layout.addLayout(button_layout)
+
+    # Показать окно по центру
+    dialog.setModal(True)
+
+    # Запускаем диалог
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        with open(config_file, 'w') as f:
+            json.dump({'license_accepted': True}, f, indent=2)
+        return True
+    else:
+        return False
+
+
+
+
 def main():
     """Основная функция запуска приложения"""
-    # Создаем приложение
-    app = QApplication(sys.argv)
+
+    # Создаем временное приложение для диалога
+    temp_app = QApplication(sys.argv) if not QApplication.instance() else QApplication.instance()
+
+    # Проверяем лицензию
+    if not check_license():
+        print("Лицензионное соглашение не принято. Программа завершена.")
+        return  # Выходим без запуска GUI
+
+    # Если дошли сюда - лицензия принята, запускаем основное окно
+
+    # Создаем основное приложение (если нужно новое)
+    if not QApplication.instance():
+        app = QApplication(sys.argv)
+    else:
+        app = QApplication.instance()
+
     app.setApplicationName("VideoDuplicate Cleaner")
     app.setApplicationVersion("1.0")
+
+    # Импортируем здесь чтобы не было циклических импортов
+    #from src.gui.main_window import MainWindow
 
     # Создаем и показываем главное окно
     window = MainWindow()

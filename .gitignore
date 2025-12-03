@@ -20,7 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+.gitignore
 # Virtual environments
 .venv
 venv/
