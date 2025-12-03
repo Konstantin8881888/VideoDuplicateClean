@@ -188,8 +188,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("VideoDuplicate Cleaner")
         self.setGeometry(100, 100, 1000, 800)  # Увеличили высоту окна
 
-        icon_path = resource_path("static/logo.jpg")
+        icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
+
+        # if os.path.exists(icon_path):
+        #     self.setWindowIcon(QIcon(icon_path))
+        # else:
+        #     print(f"Warning: Icon not found at {icon_path}")
+        #     # Пробуем альтернативный путь
+        #     alt_path = os.path.join(os.path.dirname(__file__), "static", "logo.ico")
+        #     if os.path.exists(alt_path):
+        #         self.setWindowIcon(QIcon(alt_path))
+
 
         # Инициализация компонентов
         self.scanner = FileScanner()
@@ -212,6 +222,10 @@ class MainWindow(QMainWindow):
 
         # Создаем интерфейс
         self.setup_ui()
+
+
+
+
 
     def setup_ui(self):
         """Создает весь пользовательский интерфейс"""
@@ -1662,8 +1676,7 @@ def main():
     app.setApplicationName("VideoDuplicate Cleaner")
     app.setApplicationVersion("1.0")
 
-    # Импортируем здесь чтобы не было циклических импортов
-    #from src.gui.main_window import MainWindow
+
 
     # Создаем и показываем главное окно
     window = MainWindow()

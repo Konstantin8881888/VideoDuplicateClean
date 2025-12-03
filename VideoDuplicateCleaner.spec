@@ -6,6 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
+        ('static/logo.ico', 'static'),
         ('src', 'src'),  # ←копирует папку src в EXE
     ],
     hiddenimports=[
