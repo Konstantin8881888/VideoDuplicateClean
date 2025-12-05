@@ -224,9 +224,6 @@ class MainWindow(QMainWindow):
         self.setup_ui()
 
 
-
-
-
     def setup_ui(self):
         """Создает весь пользовательский интерфейс"""
         # Создаем вкладки
@@ -896,23 +893,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             return f"📁 {filename[:20]}\n📏 {size_mb:.1f}MB\n⚠️ Ошибка"
 
-    # def toggle_mark_deletion(self, file_path: str, marked: bool):
-    #     """Отмечает/снимает отметку файла для удаления БЕЗ немедленного обновления UI"""
-    #     try:
-    #         if marked:
-    #             self.marked_for_deletion.add(file_path)
-    #         else:
-    #             self.marked_for_deletion.discard(file_path)
-    #
-    #         # ОТЛАДКА: логируем изменение
-    #         print(f"DEBUG: toggle_mark_deletion - файлов отмечено: {len(self.marked_for_deletion)}")
-    #
-    #         # Обновляем UI с небольшой задержкой чтобы избежать накопления вызовов
-    #         from PyQt6.QtCore import QTimer
-    #         QTimer.singleShot(10, self.update_deletion_ui)
-    #
-    #     except Exception as e:
-    #         print(f"Ошибка в toggle_mark_deletion: {e}")
+
 
     def toggle_mark_deletion(self, file_path: str, marked: bool):
         """Ведём счётчик сколько чекбоксов отмечено для файла"""
@@ -1115,16 +1096,16 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'compare_btn'):
                 self.compare_btn.setEnabled(bool(self.video1_path and self.video2_path))
 
-                # Обновляем UI удаления и заносим запись в лог
-                self.update_deletion_ui()
-                self.create_pair_buttons(self.current_pairs)
-                try:
-                    if hasattr(self, 'compare_results') and self.compare_results:
-                        self.compare_results.append(f"\n🗑️ Файл удалён: {os.path.basename(norm_path)}")
-                except Exception:
-                    pass
+            # Обновляем UI удаления и заносим запись в лог
+            self.update_deletion_ui()
+            self.create_pair_buttons(self.current_pairs)
+            try:
+                if hasattr(self, 'compare_results') and self.compare_results:
+                    self.compare_results.append(f"\n🗑️ Файл удалён: {os.path.basename(norm_path)}")
+            except Exception:
+                pass
 
-                self.log_text.append(f"🗑️ Файл удалён: {os.path.basename(norm_path)}")
+            self.log_text.append(f"🗑️ Файл удалён: {os.path.basename(norm_path)}")
 
         except Exception as e:
             print(f"Ошибка в on_video_deleted: {e}")
@@ -1652,8 +1633,6 @@ def check_license() -> bool:
         return False
 
 
-
-
 def main():
     """Основная функция запуска приложения"""
 
@@ -1675,8 +1654,6 @@ def main():
 
     app.setApplicationName("VideoDuplicate Cleaner")
     app.setApplicationVersion("1.0")
-
-
 
     # Создаем и показываем главное окно
     window = MainWindow()

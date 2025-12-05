@@ -4,7 +4,7 @@
 # http://msdn.microsoft.com/en-us/library/ms646997.aspx
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
+    filevers=(0, 7, 0, 0),
     prodvers=(1, 0, 0, 0),
     mask=0x3f,
     flags=0x0,
