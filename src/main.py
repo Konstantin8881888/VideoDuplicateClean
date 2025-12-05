@@ -1,10 +1,14 @@
 import os
 import sys
+import json
+import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox
+    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog
 )
+
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
 from PyQt6.QtGui import QIcon
 
@@ -12,6 +16,7 @@ from PyQt6.QtGui import QIcon
 from src.core.file_scanner import FileScanner
 from src.core.frame_extractor import FrameExtractor
 from src.core.optimized_comparator import OptimizedVideoComparator
+from src.core.video_comparator import VideoComparator
 from src.config import Config
 
 
@@ -183,8 +188,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("VideoDuplicate Cleaner")
         self.setGeometry(100, 100, 1000, 800)  # Увеличили высоту окна
 
-        icon_path = resource_path("static/logo.jpg")
+        icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
+
+        # if os.path.exists(icon_path):
+        #     self.setWindowIcon(QIcon(icon_path))
+        # else:
+        #     print(f"Warning: Icon not found at {icon_path}")
+        #     # Пробуем альтернативный путь
+        #     alt_path = os.path.join(os.path.dirname(__file__), "static", "logo.ico")
+        #     if os.path.exists(alt_path):
+        #         self.setWindowIcon(QIcon(alt_path))
 
         # Инициализация компонентов
         self.scanner = FileScanner()
@@ -361,6 +375,49 @@ class MainWindow(QMainWindow):
         pairs_label = QLabel("🎯 Найденные пары для сравнения:")
         pairs_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         layout.addWidget(pairs_label)
+
+        # Добавляем пояснение
+        # Создаем контейнер для плашки с крестиком
+        warning_widget = QWidget()
+        warning_layout = QHBoxLayout(warning_widget)
+        warning_layout.setContentsMargins(8, 8, 8, 8)
+
+        # Текст предупреждения
+        warning_text = QLabel(
+            "💡 <span style='color: #856404; font-size: 9pt;'>"
+            "Один и тот же файл может быть в нескольких парах - счётчик показывает уникальные файлы для удаления"
+            "</span>"
+        )
+        warning_text.setWordWrap(True)
+        warning_layout.addWidget(warning_text)
+
+        # Кнопка закрытия (крестик)
+        close_btn = QPushButton("×")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                color: #856404;
+                font-weight: bold;
+                font-size: 14pt;
+                border: none;
+                background: transparent;
+                padding: 0px 4px;
+                margin-left: 4px;
+            }
+            QPushButton:hover {
+                background-color: #ffeaa7;
+                border-radius: 3px;
+            }
+        """)
+        close_btn.setFixedSize(20, 20)
+        close_btn.clicked.connect(warning_widget.hide)
+        warning_layout.addWidget(close_btn)
+
+        # Стиль для всей плашки
+        warning_widget.setStyleSheet(
+            "background-color: #fff3cd; border-radius: 4px; border: 1px solid #ffeaa7;"
+        )
+
+        layout.addWidget(warning_widget)
 
         # ПРОКРУЧИВАЕМАЯ ОБЛАСТЬ ДЛЯ КНОПОК ПАР
         scroll_area = QScrollArea()
@@ -834,22 +891,22 @@ class MainWindow(QMainWindow):
             return f"📁 {filename[:20]}\n📏 {size_mb:.1f}MB\n⚠️ Ошибка"
 
     def toggle_mark_deletion(self, file_path: str, marked: bool):
-        """Отмечает/снимает отметку файла для удаления БЕЗ немедленного обновления UI"""
-        try:
-            if marked:
-                self.marked_for_deletion.add(file_path)
-            else:
-                self.marked_for_deletion.discard(file_path)
+        """Ведём счётчик сколько чекбоксов отмечено для файла"""
+        if not hasattr(self, 'file_reference_count'):
+            self.file_reference_count = {}
 
-            # ОТЛАДКА: логируем изменение
-            print(f"DEBUG: toggle_mark_deletion - файлов отмечено: {len(self.marked_for_deletion)}")
+        if marked:
+            self.file_reference_count[file_path] = self.file_reference_count.get(file_path, 0) + 1
+        else:
+            self.file_reference_count[file_path] = self.file_reference_count.get(file_path, 1) - 1
 
-            # Обновляем UI с небольшой задержкой чтобы избежать накопления вызовов
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(10, self.update_deletion_ui)
+        # Файл отмечен если есть ХОТЯ БЫ ОДНА отметка
+        if self.file_reference_count.get(file_path, 0) > 0:
+            self.marked_for_deletion.add(file_path)
+        else:
+            self.marked_for_deletion.discard(file_path)
 
-        except Exception as e:
-            print(f"Ошибка в toggle_mark_deletion: {e}")
+        self.update_deletion_ui()
 
     def update_deletion_ui(self):
         """Обновляет UI управления удалением с подсчетом размера"""
@@ -1494,15 +1551,100 @@ class MainWindow(QMainWindow):
             print(f"Ошибка при завершении приложения: {e}")
             event.accept()  # Все равно принимаем закрытие
 
-
 # =============================================================================
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
 # =============================================================================
 
+def check_license() -> bool:
+    """Проверяет принятие лицензии, возвращает True если принята"""
+    config_file = "user_settings.json"
+
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                settings = json.load(f)
+                if settings.get('license_accepted', False):
+                    return True
+        except:
+            pass
+
+    # Создаем кастомное диалоговое окно
+    dialog = QDialog()
+    dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
+    dialog.setGeometry(100, 100, 600, 400)  # ← РАЗМЕР ОКНА
+
+    layout = QVBoxLayout(dialog)
+
+    # Заголовок
+    title_label = QLabel("Пожалуйста, ознакомьтесь с лицензионным соглашением:")
+    title_label.setStyleSheet("font-weight: bold; font-size: 12pt; margin: 10px;")
+    layout.addWidget(title_label)
+
+    # Поле с текстом лицензии (прокручиваемое)
+    license_text = QTextEdit()
+    license_text.setReadOnly(True)
+    license_text.setPlainText("""
+    ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
+
+    1. Программа предоставляется "как есть"
+    2. Автор не несёт ответственности за удалённые файлы
+    3. Вы используете программу на свой страх и риск
+    4. Перед удалением делайте бэкапы важных данных
+    5. Вы не можете распространять программу без разрешения автора
+    6. Коммерческое использование запрещено без разрешения автора
+    7. Все права принадлежат автору
+
+    Полный текст лицензии будет доступен в следующих версиях.
+
+    Нажимая "Принимаю", вы соглашаетесь с условиями использования.
+    """)
+    layout.addWidget(license_text)
+
+    # Кнопки
+    button_layout = QHBoxLayout()
+
+    accept_btn = QPushButton("✅ Принимаю")
+    accept_btn.clicked.connect(lambda: dialog.accept())
+    accept_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px; font-weight: bold;")
+
+    reject_btn = QPushButton("❌ Не принимаю")
+    reject_btn.clicked.connect(lambda: dialog.reject())
+    reject_btn.setStyleSheet("background-color: #f44336; color: white; padding: 8px; font-weight: bold;")
+
+    button_layout.addWidget(accept_btn)
+    button_layout.addWidget(reject_btn)
+    layout.addLayout(button_layout)
+
+    # Показать окно по центру
+    dialog.setModal(True)
+
+    # Запускаем диалог
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        with open(config_file, 'w') as f:
+            json.dump({'license_accepted': True}, f, indent=2)
+        return True
+    else:
+        return False
+
 def main():
     """Основная функция запуска приложения"""
-    # Создаем приложение
-    app = QApplication(sys.argv)
+
+    # Создаем временное приложение для диалога
+    temp_app = QApplication(sys.argv) if not QApplication.instance() else QApplication.instance()
+
+    # Проверяем лицензию
+    if not check_license():
+        print("Лицензионное соглашение не принято. Программа завершена.")
+        return  # Выходим без запуска GUI
+
+    # Если дошли сюда - лицензия принята, запускаем основное окно
+
+    # Создаем основное приложение (если нужно новое)
+    if not QApplication.instance():
+        app = QApplication(sys.argv)
+    else:
+        app = QApplication.instance()
+
     app.setApplicationName("VideoDuplicate Cleaner")
     app.setApplicationVersion("1.0")
 
@@ -1512,7 +1654,6 @@ def main():
 
     # Запускаем цикл событий
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
