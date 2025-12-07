@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
 from PyQt6.QtGui import QIcon
 
+
 # импорты наших модулей
 from src.core.file_scanner import FileScanner
 from src.core.frame_extractor import FrameExtractor
@@ -266,6 +267,23 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(self.selected_folder_label)
         layout.addLayout(folder_layout)
 
+        # Кнопка лицензии
+        self.license_button = QPushButton("📜 Ознакомиться с лицензией")
+        self.license_button.clicked.connect(self.show_license)
+        self.license_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+                padding: 5px 10px;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        folder_layout.addWidget(self.license_button)
+
+        layout.addLayout(folder_layout)
         # Настройки сканирования
         settings_layout = QHBoxLayout()
 
@@ -517,6 +535,52 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.compare_results)
 
         return widget
+
+    def show_license(self):
+        """Показывает окно с текстом лицензии"""
+
+        # Создаем диалоговое окно
+        dialog = QDialog(self)
+        dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
+        dialog.setGeometry(200, 200, 700, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Заголовок
+        title_label = QLabel("Актуальный текст лицензионного соглашения:")
+        title_label.setStyleSheet("font-weight: bold; font-size: 11pt; margin: 10px;")
+        layout.addWidget(title_label)
+
+        # Поле с текстом лицензии
+        license_text = QTextEdit()
+        license_text.setReadOnly(True)
+
+        # Используем существующую функцию load_license_text()
+        license_content = load_license_text()  # ← вызов существующей функции!
+        license_text.setPlainText(license_content)
+
+        layout.addWidget(license_text)
+
+        # Кнопка закрытия
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(dialog.accept)
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Показать окно
+        dialog.exec()
 
     def clear_all_marks(self):
         """Очищает все отметки удаления"""
@@ -1561,6 +1625,34 @@ class MainWindow(QMainWindow):
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
 # =============================================================================
 
+def load_license_text():
+    """Загружает текст лицензии из файла"""
+    try:
+        # Пробуем разные пути
+        possible_paths = [
+            resource_path("static/license.txt"),
+            os.path.join("static", "license.txt"),
+            os.path.join(os.path.dirname(__file__), "static", "license.txt"),
+        ]
+
+        for license_path in possible_paths:
+            if os.path.exists(license_path):
+                with open(license_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+
+        # Fallback: если файл не найден
+        return """
+        ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
+
+        [Файл license.txt не найден]
+
+        Программа предоставляется "как есть".
+        """
+
+    except Exception as e:
+        return f"Ошибка загрузки лицензии: {e}"
+
+
 def check_license() -> bool:
     """Проверяет принятие лицензии, возвращает True если принята"""
     config_file = "user_settings.json"
@@ -1574,10 +1666,13 @@ def check_license() -> bool:
         except:
             pass
 
+    # Загружаем лицензию из файла
+    license_content = load_license_text()
+
     # Создаем кастомное диалоговое окно
     dialog = QDialog()
     dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
-    dialog.setGeometry(100, 100, 600, 400)  # ← РАЗМЕР ОКНА
+    dialog.setGeometry(100, 100, 600, 400)
 
     layout = QVBoxLayout(dialog)
 
@@ -1587,23 +1682,9 @@ def check_license() -> bool:
     layout.addWidget(title_label)
 
     # Поле с текстом лицензии (прокручиваемое)
-    license_text = QTextEdit()
+    license_text = QTextEdit()  # ← СОЗДАЛИ ПЕРЕМЕННУЮ
     license_text.setReadOnly(True)
-    license_text.setPlainText("""
-    ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
-
-    1. Программа предоставляется "как есть"
-    2. Автор не несёт ответственности за удалённые файлы
-    3. Вы используете программу на свой страх и риск
-    4. Перед удалением делайте бэкапы важных данных
-    5. Вы не можете распространять программу без разрешения автора
-    6. Коммерческое использование запрещено
-    7. Все права принадлежат автору
-
-    Полный текст лицензии будет доступен в следующих версиях.
-
-    Нажимая "Принимаю", вы соглашаетесь с условиями использования.
-    """)
+    license_text.setPlainText(license_content)
     layout.addWidget(license_text)
 
     # Кнопки
