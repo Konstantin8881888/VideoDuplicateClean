@@ -655,21 +655,50 @@ class MainWindow(QMainWindow):
                 self.log_text.append(f"   Удалены: {', '.join(removed_names)}" +
                                      ("..." if removed_count > 3 else ""))
 
-    # def remove_last_folder(self):
-    #     """Удаляет последнюю добавленную папку"""
-    #     if not self.selected_folders:
-    #         return
-    #
-    #     last_folder = self.selected_folders.pop()
-    #     self.log_text.append(f"↶ Удалена последняя папка: {os.path.basename(last_folder)}")
-    #
-    #     # Обновляем UI
-    #     #self.update_folder_label()
-    #
-    #     # Отключаем кнопки если список пуст
-    #     if not self.selected_folders:
-    #         self.clear_folders_btn.setEnabled(False)
-    #         self.remove_last_btn.setEnabled(False)
+    def check_folder_nesting(self, new_folder):
+        """
+        Проверяет нет ли вложенности между новой папкой и уже выбранными
+
+        Возвращает:
+        - True если всё ок (нет вложенности)
+        - False если есть проблема (вложенность или дублирование)
+        """
+        if not hasattr(self, 'selected_folders') or not self.selected_folders:
+            return True
+
+        new_folder = os.path.normpath(new_folder)
+
+        for existing_folder in self.selected_folders:
+            existing_folder = os.path.normpath(existing_folder)
+
+            # Проверка: новая папка внутри существующей
+            if new_folder.startswith(existing_folder + os.sep):
+                # Находим разницу в путях для сообщения
+                relative_path = os.path.relpath(new_folder, existing_folder)
+                self.show_warning(
+                    f"Папка '{os.path.basename(new_folder)}' уже содержится "
+                    f"в выбранной папке '{os.path.basename(existing_folder)}'.\n"
+                    f"Путь: {relative_path}\n\n"
+                    f"Достаточно выбрать только родительскую папку."
+                )
+                return False
+
+            # Проверка: существующая папка внутри новой
+            if existing_folder.startswith(new_folder + os.sep):
+                relative_path = os.path.relpath(existing_folder, new_folder)
+                self.show_warning(
+                    f"Выбранная папка '{os.path.basename(existing_folder)}' "
+                    f"уже содержится в добавляемой папке '{os.path.basename(new_folder)}'.\n"
+                    f"Путь: {relative_path}\n\n"
+                    f"Достаточно выбрать только родительскую папку."
+                )
+                return False
+
+            # Проверка: это одна и та же папка (уже обрабатывается в select_folder)
+            if new_folder == existing_folder:
+                return False
+
+        return True
 
     def remove_last_folder(self):
         """Удаляет последнюю добавленную папку"""
@@ -802,7 +831,7 @@ class MainWindow(QMainWindow):
 
                     self.selected_folder_label.setText(label_text)
 
-                    # ВКЛЮЧАЕМ кнопку очистки
+                    # ВКЛЮЧАЕМ кнопки очистки
                     self.clear_folders_btn.setEnabled(True)
                     self.remove_last_btn.setEnabled(True)
 
@@ -811,10 +840,15 @@ class MainWindow(QMainWindow):
                     # ПАПКА УЖЕ В СПИСКЕ
                     print("DEBUG: Folder already in list")
                     self.log_text.append(f"⚠ Папка уже в списке: {os.path.basename(folder)}")
+
+                # 2. Проверка на вложенность с уже выбранными папками
+                if not self.check_folder_nesting(folder):
+                    return  # не добавляем папку
+
             else:
                 # Пользователь отменил выбор (folder = "")
                 print("DEBUG: User cancelled folder selection")
-                # Не логируем - это нормально
+
 
         except Exception as e:
             print(f"ERROR in select_folder: {e}")
