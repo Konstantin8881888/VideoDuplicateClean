@@ -325,10 +325,35 @@ class MainWindow(QMainWindow):
         """)
         folder_layout.addWidget(self.license_button)
 
-        # КНОПКА ОЧИСТКИ ПАПОК (НОВАЯ!)
-        self.clear_folders_btn = QPushButton("🗑️ Очистить список папок")
+        # ВТОРОЙ РЯД: Управление списком папок
+        folder_control_layout = QHBoxLayout()
+
+        # Пустое пространство слева
+        folder_control_layout.addStretch()
+
+        # Кнопка удаления последней папки
+        self.remove_last_btn = QPushButton("↶ Удалить последнюю папку")
+        self.remove_last_btn.clicked.connect(self.remove_last_folder)
+        self.remove_last_btn.setToolTip("Удалить последнюю добавленную папку")
+        self.remove_last_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fff3cd;
+                border: 1px solid #ffeaa7;
+                padding: 5px 10px;
+                font-size: 9pt;
+                margin-right: 5px;
+            }
+            QPushButton:hover {
+                background-color: #ffeaa7;
+            }
+        """)
+        self.remove_last_btn.setEnabled(False)
+        folder_control_layout.addWidget(self.remove_last_btn)
+
+        # Кнопка очистки всех папок
+        self.clear_folders_btn = QPushButton("🗑️ Очистить список")
         self.clear_folders_btn.clicked.connect(self.clear_folders)
-        self.clear_folders_btn.setToolTip("Очистить список выбранных папок")
+        self.clear_folders_btn.setToolTip("Очистить весь список выбранных папок")
         self.clear_folders_btn.setStyleSheet("""
             QPushButton {
                 background-color: #ffebee;
@@ -340,10 +365,12 @@ class MainWindow(QMainWindow):
                 background-color: #ffcdd2;
             }
         """)
-        self.clear_folders_btn.setEnabled(False)  # выключена пока нет папок
-        folder_layout.addWidget(self.clear_folders_btn)
+        self.clear_folders_btn.setEnabled(False)
+        folder_control_layout.addWidget(self.clear_folders_btn)
 
-        layout.addLayout(folder_layout)
+        layout.addLayout(folder_control_layout)
+
+
         # Настройки сканирования
         settings_layout = QHBoxLayout()
 
@@ -628,6 +655,55 @@ class MainWindow(QMainWindow):
                 self.log_text.append(f"   Удалены: {', '.join(removed_names)}" +
                                      ("..." if removed_count > 3 else ""))
 
+    # def remove_last_folder(self):
+    #     """Удаляет последнюю добавленную папку"""
+    #     if not self.selected_folders:
+    #         return
+    #
+    #     last_folder = self.selected_folders.pop()
+    #     self.log_text.append(f"↶ Удалена последняя папка: {os.path.basename(last_folder)}")
+    #
+    #     # Обновляем UI
+    #     #self.update_folder_label()
+    #
+    #     # Отключаем кнопки если список пуст
+    #     if not self.selected_folders:
+    #         self.clear_folders_btn.setEnabled(False)
+    #         self.remove_last_btn.setEnabled(False)
+
+    def remove_last_folder(self):
+        """Удаляет последнюю добавленную папку"""
+        try:
+            if not self.selected_folders:
+                return
+
+            # Удаляем папку
+            last_folder = self.selected_folders.pop()
+            self.log_text.append(f"↶ Удалена последняя папка: {os.path.basename(last_folder)}")
+
+            # ОБНОВЛЯЕМ НАДПИСЬ
+            if self.selected_folders:
+                # Есть папки - показываем список
+                label_text = f"Выбрано папок: {len(self.selected_folders)}"
+                names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
+                label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
+            else:
+                # Нет папок - стандартный текст
+                label_text = "Папки не выбраны"
+
+            # Устанавливаем текст НАПРЯМУЮ
+            self.selected_folder_label.setText(label_text)
+
+            # Отключаем кнопки если список пуст
+            if not self.selected_folders:
+                self.clear_folders_btn.setEnabled(False)
+                self.remove_last_btn.setEnabled(False)
+
+        except Exception as e:
+            print(f"ERROR in remove_last_folder: {e}")
+            import traceback
+            traceback.print_exc()
+
     def show_license(self):
         """Показывает окно с текстом лицензии"""
 
@@ -728,6 +804,7 @@ class MainWindow(QMainWindow):
 
                     # ВКЛЮЧАЕМ кнопку очистки
                     self.clear_folders_btn.setEnabled(True)
+                    self.remove_last_btn.setEnabled(True)
 
                     self.log_text.append(f"📁 Добавлена папка: {os.path.basename(folder)}")
                 else:
