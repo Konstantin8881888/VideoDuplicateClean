@@ -26,42 +26,75 @@ from src.config import Config
 # =============================================================================
 
 class OptimizedScanThread(QThread):
-    """Поток для оптимизированного сканирования папки"""
+    """Поток для оптимизированного сканирования всех папок"""
 
     # Сигналы для обновления UI из потока
     progress_signal = pyqtSignal(int, str)  # прогресс (проценты, сообщение)
     result_signal = pyqtSignal(list)  # финальные результаты
     finished_signal = pyqtSignal()  # завершение работы
 
-    def __init__(self, comparator, folder_path, similarity_threshold=None):
+    def __init__(self, comparator, folder_paths, similarity_threshold=None):
+        """
+        Инициализация потока
+
+        Args:
+            comparator: объект для сравнения видео
+            folder_paths: ОДНА папка (str) или СПИСОК папок (list)
+            similarity_threshold: порог схожести
+        """
         super().__init__()
         self.comparator = comparator
-        self.folder_path = folder_path
+        # Делаем всегда списком, даже если передали одну папку
+        if isinstance(folder_paths, str):
+            self.folder_paths = [folder_paths]
+        else:
+            self.folder_paths = folder_paths
         self.similarity_threshold = similarity_threshold if similarity_threshold is not None else Config.SIMILARITY_THRESHOLD
         self.scanner = FileScanner()
 
     def run(self):
         """Основной метод, который выполняется в потоке"""
         try:
-            self.progress_signal.emit(0, "Поиск видеофайлов...")
+            all_video_files = []
+            total_folders = len(self.folder_paths)
 
-            # Находим все видеофайлы
-            video_files = self.scanner.find_video_files(self.folder_path)
+            # ШАГ 1: Собираем ВСЕ видео из ВСЕХ папок
+            for i, folder in enumerate(self.folder_paths, 1):
+                progress = int((i - 1) / total_folders * 40)  # первые 40% на сбор файлов
+                self.progress_signal.emit(
+                    progress,
+                    f"Сканирую папку {i}/{total_folders}: {os.path.basename(folder)}"
+                )
 
-            if not video_files:
+                # Находим видео в текущей папке
+                video_files = self.scanner.find_video_files(folder)
+                all_video_files.extend(video_files)
+
+                self.progress_signal.emit(
+                    progress + 5,
+                    f"Папка {i}: найдено {len(video_files)} видео"
+                )
+
+            if not all_video_files:
                 self.result_signal.emit([])
                 return
 
-            self.progress_signal.emit(10, f"Найдено {len(video_files)} видеофайлов")
+            self.progress_signal.emit(50, f"Всего найдено {len(all_video_files)} видеофайлов")
 
-            # Запускаем оптимизированный поиск похожих видео
+            # ШАГ 2: Ищем похожие видео среди ВСЕХ собранных файлов
+            self.progress_signal.emit(60, "Анализирую схожесть видео...")
+
             similar_pairs = self.comparator.find_similar_videos_optimized(
-                video_files,
+                all_video_files,
                 self.similarity_threshold
             )
 
+            self.progress_signal.emit(90, f"Анализ завершен")
+
             # Отправляем результаты в основной поток
             self.result_signal.emit(similar_pairs)
+
+            self.progress_signal.emit(100, f"Найдено {len(similar_pairs)} пар похожих видео")
 
         except Exception as e:
             print(f"Ошибка в потоке сканирования: {e}")
@@ -95,7 +128,10 @@ class CompareThread(QThread):
                 for name in ('max_frames', 'num_frames', 'frames', 'frame_count', 'n_frames', 'sample_frames', 'count'):
                     try:
                         result = self.comparator.compare_videos(self.video1_path, self.video2_path, **{name: self.max_frames})
-                        tried = True
+                        tried = Trueself.progress_signal.emit(50, f"Всего найдено {len(all_video_files)} видеофайлов")
+
+            # ШАГ 2: Ищем похожие видео среди ВСЕХ собранных файлов
+            self.progress_signal.emit(60, "Анализирую схожесть видео...")
                         break
                     except TypeError:
                         continue
@@ -201,14 +237,14 @@ class MainWindow(QMainWindow):
         #     if os.path.exists(alt_path):
         #         self.setWindowIcon(QIcon(alt_path))
 
-
+        self.log_counter = 0
         # Инициализация компонентов
         self.scanner = FileScanner()
         self.frame_extractor = FrameExtractor()
         self.comparator = OptimizedVideoComparator()
 
         # Переменные состояния
-        self.selected_folder = ""
+        self.selected_folders = []  # ← список папок
         self.video1_path = ""
         self.video2_path = ""
         self.current_pairs = []
@@ -224,7 +260,13 @@ class MainWindow(QMainWindow):
         # Создаем интерфейс
         self.setup_ui()
 
-
+    def safe_log(self, message):
+        """Безопасное логирование с защитой от рекурсии"""
+        self.log_counter += 1
+        if self.log_counter > 1000:  # защита от бесконечного цикла
+            print(f"ERROR: Too many log calls: {message}")
+            return
+        self.log_text.append(message)
     def setup_ui(self):
         """Создает весь пользовательский интерфейс"""
         # Создаем вкладки
@@ -263,7 +305,7 @@ class MainWindow(QMainWindow):
         self.select_button.clicked.connect(self.select_folder)
         folder_layout.addWidget(self.select_button)
 
-        self.selected_folder_label = QLabel("Папка не выбрана")
+        self.selected_folder_label = QLabel("Папки не выбраны")
         folder_layout.addWidget(self.selected_folder_label)
         layout.addLayout(folder_layout)
 
@@ -608,54 +650,178 @@ class MainWindow(QMainWindow):
     # МЕТОДЫ ДЛЯ ВКЛАДКИ СКАНИРОВАНИЯ
     # =============================================================================
 
+    # def select_folder(self):
+    #     """Выбирает папку для сканирования"""
+    #     folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
+    #     if folder:
+    #         self.selected_folder = folder
+    #         self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
+    #         self.log_text.append(f"📁 Выбрана папка: {folder}")
+
+    # def select_folder(self):
+    #     """Добавляет папку в список для сканирования"""
+    #     folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
+    #     if folder and folder not in self.selected_folders:  # избегаем дубликатов
+    #         self.selected_folders.append(folder)
+    #
+    #         # Обновляем текст - показываем сколько папок выбрано
+    #         if len(self.selected_folders) == 1:
+    #             self.selected_folder_label.setText(f"Выбрана 1 папка: {os.path.basename(folder)}")
+    #         else:
+    #             folder_names = [os.path.basename(f) for f in self.selected_folders]
+    #             self.selected_folder_label.setText(
+    #                 f"Выбрано {len(self.selected_folders)} папок: {', '.join(folder_names[:3])}" +
+    #                 ("..." if len(folder_names) > 3 else "")
+    #             )
+    #
+    #         self.log_text.append(f"📁 Добавлена папка: {folder}")
+
     def select_folder(self):
         """Выбирает папку для сканирования"""
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-        if folder:
-            self.selected_folder = folder
-            self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
-            self.log_text.append(f"📁 Выбрана папка: {folder}")
+        try:
+            folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
+            print(f"DEBUG: Selected folder: {folder}")
+
+            if folder:
+                # Проверяем что атрибут существует
+                if not hasattr(self, 'selected_folders'):
+                    self.selected_folders = []  # создаём если нет
+                    print("DEBUG: Created selected_folders list")
+
+                # Добавляем папку (без дубликатов)
+                if folder not in self.selected_folders:
+                    self.selected_folders.append(folder)
+                    print(f"DEBUG: Added folder. Total: {len(self.selected_folders)}")
+                else:
+                    print("DEBUG: Folder already in list")
+
+                # Обновляем метку
+                label_text = f"Выбрано папок: {len(self.selected_folders)}"
+                if self.selected_folders:
+                    names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
+                    label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
+
+                self.selected_folder_label.setText(label_text)
+
+                # Логируем
+                self.log_text.append(f"📁 Добавлена папка: {os.path.basename(folder)}")
+
+        except Exception as e:
+            print(f"ERROR in select_folder: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # def start_optimized_scan(self):
+    #     """Запускает оптимизированное сканирование папки"""
+    #     if not self.selected_folders:  # ← меняем на список
+    #         self.show_warning("Сначала выберите хотя бы одну папку для сканирования!")
+    #         return
+    #
+    #     # Получаем и проверяем порог схожести
+    #     try:
+    #         threshold_text = self.similarity_threshold_input.text()
+    #         threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
+    #         if not (0.1 <= threshold <= 1.0):
+    #             raise ValueError("Порог должен быть между 0.1 и 1.0")
+    #     except ValueError as e:
+    #         self.show_warning(f"Некорректный порог схожести: {e}")
+    #         return
+    #
+    #     # Блокируем UI на время сканирования
+    #     self.set_scan_ui_enabled(False)
+    #     self.progress_bar.setVisible(True)
+    #     self.progress_bar.setValue(0)
+    #
+    #     # Очищаем предыдущие кнопки групп
+    #     self.clear_pair_buttons()
+    #
+    #     self.log_text.clear()
+    #     self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
+    #
+    #     # Логируем все выбранные папки
+    #     for i, folder in enumerate(self.selected_folders, 1):
+    #         self.log_text.append(f"📁 Папка {i}/{len(self.selected_folders)}: {folder}")
+    #
+    #     self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
+    #     self.log_text.append(f"📊 Всего папок для сканирования: {len(self.selected_folders)}")
+    #     self.log_text.append("─" * 50)
+    #
+    #     # Запускаем сканирование в отдельном потоке
+    #     self.optimized_scan_thread = OptimizedScanThread(
+    #         self.comparator,
+    #         self.selected_folder,
+    #         threshold
+    #     )
+    #     self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
+    #     self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
+    #     self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
+    #     self.optimized_scan_thread.start()
 
     def start_optimized_scan(self):
-        """Запускает оптимизированное сканирование папки"""
-        if not self.selected_folder:
-            self.show_warning("Сначала выберите папку для сканирования!")
-            return
-
-        # Получаем и проверяем порог схожести
+        """Запускает оптимизированное сканирование всех выбранных папок"""
         try:
-            threshold_text = self.similarity_threshold_input.text()
-            threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
-            if not (0.1 <= threshold <= 1.0):
-                raise ValueError("Порог должен быть между 0.1 и 1.0")
-        except ValueError as e:
-            self.show_warning(f"Некорректный порог схожести: {e}")
-            return
+            print(f"DEBUG: Starting scan with folders: {self.selected_folders}")
 
-        # Блокируем UI на время сканирования
-        self.set_scan_ui_enabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+            if not self.selected_folders:
+                self.show_warning("Сначала выберите хотя бы одну папку для сканирования!")
+                return
 
-        # Очищаем предыдущие кнопки групп
-        self.clear_pair_buttons()
+            # Проверка порога
+            try:
+                threshold_text = self.similarity_threshold_input.text()
+                threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
+                if not (0.1 <= threshold <= 1.0):
+                    raise ValueError("Порог должен быть между 0.1 и 1.0")
+            except ValueError as e:
+                self.show_warning(f"Некорректный порог схожести: {e}")
+                return
 
-        self.log_text.clear()
-        self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
-        self.log_text.append(f"📁 Папка: {self.selected_folder}")
-        self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
-        self.log_text.append("─" * 50)
+            print(f"DEBUG: Threshold: {threshold}")
 
-        # Запускаем сканирование в отдельном потоке
-        self.optimized_scan_thread = OptimizedScanThread(
-            self.comparator,
-            self.selected_folder,
-            threshold
-        )
-        self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
-        self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
-        self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
-        self.optimized_scan_thread.start()
+            # Блокируем UI на время сканирования
+            self.set_scan_ui_enabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+
+            # Очищаем предыдущие результаты
+            self.clear_pair_buttons()
+            self.log_text.clear()
+
+            self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
+            for i, folder in enumerate(self.selected_folders, 1):
+                self.log_text.append(f"📁 Папка {i}: {folder}")
+            self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
+            self.log_text.append(f"📊 Всего папок: {len(self.selected_folders)}")
+            self.log_text.append("─" * 50)
+
+            print(f"DEBUG: Creating OptimizedScanThread...")
+
+            # Запускаем сканирование в отдельном потоке для ВСЕХ папок
+            self.optimized_scan_thread = OptimizedScanThread(
+                self.comparator,
+                self.selected_folders,  # ← список папок
+                threshold
+            )
+
+            print(f"DEBUG: Connecting signals...")
+
+            # Подключаем сигналы
+            self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
+            self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
+            self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
+
+            print(f"DEBUG: Starting thread...")
+            self.optimized_scan_thread.start()
+
+            print(f"DEBUG: Thread started successfully")
+
+        except Exception as e:
+            print(f"ERROR in start_optimized_scan: {e}")
+            import traceback
+            traceback.print_exc()
+            # Разблокируем UI в случае ошибки
+            self.set_scan_ui_enabled(True)
+            self.progress_bar.setVisible(False)
 
     def update_optimized_progress(self, value: int, message: str):
         """Обновляет прогресс сканирования"""
