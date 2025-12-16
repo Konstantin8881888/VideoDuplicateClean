@@ -128,10 +128,7 @@ class CompareThread(QThread):
                 for name in ('max_frames', 'num_frames', 'frames', 'frame_count', 'n_frames', 'sample_frames', 'count'):
                     try:
                         result = self.comparator.compare_videos(self.video1_path, self.video2_path, **{name: self.max_frames})
-                        tried = Trueself.progress_signal.emit(50, f"Всего найдено {len(all_video_files)} видеофайлов")
-
-            # ШАГ 2: Ищем похожие видео среди ВСЕХ собранных файлов
-            self.progress_signal.emit(60, "Анализирую схожесть видео...")
+                        tried = True
                         break
                     except TypeError:
                         continue
@@ -796,7 +793,7 @@ class MainWindow(QMainWindow):
 
             print(f"DEBUG: Creating OptimizedScanThread...")
 
-            # Запускаем сканирование в отдельном потоке для ВСЕХ папок
+            # Запускаем поток
             self.optimized_scan_thread = OptimizedScanThread(
                 self.comparator,
                 self.selected_folders,  # ← список папок
