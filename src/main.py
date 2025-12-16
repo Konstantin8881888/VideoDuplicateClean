@@ -220,7 +220,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 1000, 800)  # Увеличили высоту окна
+        self.setGeometry(100, 100, 1100, 800)  # Увеличили высоту окна
 
         icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
@@ -306,6 +306,9 @@ class MainWindow(QMainWindow):
         folder_layout.addWidget(self.selected_folder_label)
         layout.addLayout(folder_layout)
 
+        # Растягивающийся элемент
+        folder_layout.addStretch()
+
         # Кнопка лицензии
         self.license_button = QPushButton("📜 Ознакомиться с лицензией")
         self.license_button.clicked.connect(self.show_license)
@@ -321,6 +324,24 @@ class MainWindow(QMainWindow):
             }
         """)
         folder_layout.addWidget(self.license_button)
+
+        # КНОПКА ОЧИСТКИ ПАПОК (НОВАЯ!)
+        self.clear_folders_btn = QPushButton("🗑️ Очистить список папок")
+        self.clear_folders_btn.clicked.connect(self.clear_folders)
+        self.clear_folders_btn.setToolTip("Очистить список выбранных папок")
+        self.clear_folders_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffebee;
+                border: 1px solid #ffcdd2;
+                padding: 5px 10px;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: #ffcdd2;
+            }
+        """)
+        self.clear_folders_btn.setEnabled(False)  # выключена пока нет папок
+        folder_layout.addWidget(self.clear_folders_btn)
 
         layout.addLayout(folder_layout)
         # Настройки сканирования
@@ -575,6 +596,38 @@ class MainWindow(QMainWindow):
 
         return widget
 
+    def clear_folders(self):
+        """Очищает список выбранных папок"""
+        if not self.selected_folders:
+            return
+
+        # Подтверждение
+        reply = QMessageBox.question(
+            self,
+            "Очистить список папок",
+            f"Вы уверены, что хотите очистить список из {len(self.selected_folders)} папок?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Запоминаем для лога
+            removed_count = len(self.selected_folders)
+            removed_names = [os.path.basename(f) for f in self.selected_folders[:3]]
+
+            # Очищаем список
+            self.selected_folders.clear()
+
+            # Обновляем UI
+            self.selected_folder_label.setText("Папки не выбраны")
+            self.clear_folders_btn.setEnabled(False)
+
+            # Логируем
+            self.log_text.append(f"🗑️ Очищен список папок ({removed_count} папок)")
+            if removed_names:
+                self.log_text.append(f"   Удалены: {', '.join(removed_names)}" +
+                                     ("..." if removed_count > 3 else ""))
+
     def show_license(self):
         """Показывает окно с текстом лицензии"""
 
@@ -647,32 +700,6 @@ class MainWindow(QMainWindow):
     # МЕТОДЫ ДЛЯ ВКЛАДКИ СКАНИРОВАНИЯ
     # =============================================================================
 
-    # def select_folder(self):
-    #     """Выбирает папку для сканирования"""
-    #     folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-    #     if folder:
-    #         self.selected_folder = folder
-    #         self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
-    #         self.log_text.append(f"📁 Выбрана папка: {folder}")
-
-    # def select_folder(self):
-    #     """Добавляет папку в список для сканирования"""
-    #     folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-    #     if folder and folder not in self.selected_folders:  # избегаем дубликатов
-    #         self.selected_folders.append(folder)
-    #
-    #         # Обновляем текст - показываем сколько папок выбрано
-    #         if len(self.selected_folders) == 1:
-    #             self.selected_folder_label.setText(f"Выбрана 1 папка: {os.path.basename(folder)}")
-    #         else:
-    #             folder_names = [os.path.basename(f) for f in self.selected_folders]
-    #             self.selected_folder_label.setText(
-    #                 f"Выбрано {len(self.selected_folders)} папок: {', '.join(folder_names[:3])}" +
-    #                 ("..." if len(folder_names) > 3 else "")
-    #             )
-    #
-    #         self.log_text.append(f"📁 Добавлена папка: {folder}")
-
     def select_folder(self):
         """Выбирает папку для сканирования"""
         try:
@@ -685,74 +712,38 @@ class MainWindow(QMainWindow):
                     self.selected_folders = []  # создаём если нет
                     print("DEBUG: Created selected_folders list")
 
-                # Добавляем папку (без дубликатов)
+                # Проверяем дубликат
                 if folder not in self.selected_folders:
+                    # ДОБАВЛЯЕМ новую папку
                     self.selected_folders.append(folder)
                     print(f"DEBUG: Added folder. Total: {len(self.selected_folders)}")
+
+                    # Обновляем метку
+                    label_text = f"Выбрано папок: {len(self.selected_folders)}"
+                    if self.selected_folders:
+                        names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
+                        label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
+
+                    self.selected_folder_label.setText(label_text)
+
+                    # ВКЛЮЧАЕМ кнопку очистки
+                    self.clear_folders_btn.setEnabled(True)
+
+                    self.log_text.append(f"📁 Добавлена папка: {os.path.basename(folder)}")
                 else:
+                    # ПАПКА УЖЕ В СПИСКЕ
                     print("DEBUG: Folder already in list")
-
-                # Обновляем метку
-                label_text = f"Выбрано папок: {len(self.selected_folders)}"
-                if self.selected_folders:
-                    names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
-                    label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
-
-                self.selected_folder_label.setText(label_text)
-
-                # Логируем
-                self.log_text.append(f"📁 Добавлена папка: {os.path.basename(folder)}")
+                    self.log_text.append(f"⚠ Папка уже в списке: {os.path.basename(folder)}")
+            else:
+                # Пользователь отменил выбор (folder = "")
+                print("DEBUG: User cancelled folder selection")
+                # Не логируем - это нормально
 
         except Exception as e:
             print(f"ERROR in select_folder: {e}")
             import traceback
             traceback.print_exc()
 
-    # def start_optimized_scan(self):
-    #     """Запускает оптимизированное сканирование папки"""
-    #     if not self.selected_folders:  # ← меняем на список
-    #         self.show_warning("Сначала выберите хотя бы одну папку для сканирования!")
-    #         return
-    #
-    #     # Получаем и проверяем порог схожести
-    #     try:
-    #         threshold_text = self.similarity_threshold_input.text()
-    #         threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
-    #         if not (0.1 <= threshold <= 1.0):
-    #             raise ValueError("Порог должен быть между 0.1 и 1.0")
-    #     except ValueError as e:
-    #         self.show_warning(f"Некорректный порог схожести: {e}")
-    #         return
-    #
-    #     # Блокируем UI на время сканирования
-    #     self.set_scan_ui_enabled(False)
-    #     self.progress_bar.setVisible(True)
-    #     self.progress_bar.setValue(0)
-    #
-    #     # Очищаем предыдущие кнопки групп
-    #     self.clear_pair_buttons()
-    #
-    #     self.log_text.clear()
-    #     self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
-    #
-    #     # Логируем все выбранные папки
-    #     for i, folder in enumerate(self.selected_folders, 1):
-    #         self.log_text.append(f"📁 Папка {i}/{len(self.selected_folders)}: {folder}")
-    #
-    #     self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
-    #     self.log_text.append(f"📊 Всего папок для сканирования: {len(self.selected_folders)}")
-    #     self.log_text.append("─" * 50)
-    #
-    #     # Запускаем сканирование в отдельном потоке
-    #     self.optimized_scan_thread = OptimizedScanThread(
-    #         self.comparator,
-    #         self.selected_folder,
-    #         threshold
-    #     )
-    #     self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
-    #     self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
-    #     self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
-    #     self.optimized_scan_thread.start()
 
     def start_optimized_scan(self):
         """Запускает оптимизированное сканирование всех выбранных папок"""
