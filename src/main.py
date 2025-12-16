@@ -1,3 +1,4 @@
+import cmd
 import os
 import sys
 import json
@@ -6,7 +7,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog
+    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog, QComboBox
 )
 
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
@@ -18,6 +19,7 @@ from src.core.frame_extractor import FrameExtractor
 from src.core.optimized_comparator import OptimizedVideoComparator
 from src.core.video_comparator import VideoComparator
 from src.config import Config
+from src.algorithms import create_algorithm
 
 
 # =============================================================================
@@ -82,92 +84,111 @@ class CompareThread(QThread):
         self.max_frames = int(max_frames or 10)
 
     def run(self):
+        """
+        Теперь сравнение для нестандартных алгоритмов выполняется в отдельном процессе
+        через src/algorithms/compare_worker.py. Это защищает GUI от падений нативных библиотек.
+        """
         result = None
+        # если мы в CompareThread (compare-tab) — предпочитаем парное сравнение по кадрам
         try:
-            # 1) Попытки вызвать comparator разными способами
-            tried = False
-            try:
-                result = self.comparator.compare_videos(self.video1_path, self.video2_path, self.max_frames)
-                tried = True
-            except TypeError:
-                # пробуем через наиболее вероятные имена kwargs
-                for name in ('max_frames', 'num_frames', 'frames', 'frame_count', 'n_frames', 'sample_frames', 'count'):
-                    try:
-                        result = self.comparator.compare_videos(self.video1_path, self.video2_path, **{name: self.max_frames})
-                        tried = True
-                        break
-                    except TypeError:
-                        continue
-                if not tried:
-                    try:
-                        result = self.comparator.compare_videos(self.video1_path, self.video2_path)
-                        tried = True
-                    except Exception:
-                        result = None
-            except Exception as e:
-                # другой тип ошибки — запомним её на выдачу
-                result = {'similarity': 0.0, 'error': str(e), 'frame_comparisons': []}
+            from src.core.frame_extractor import FrameExtractor
+            from src.algorithms.comparison_manager import ComparisonManager
+            extractor = FrameExtractor()
+            manager = ComparisonManager()
 
-            # 2) Если результат пустой или вернул меньше нужных сравнений — делаем локальный fallback
-            need = self.max_frames
-            fc_len = 0
-            try:
-                fc = result.get('frame_comparisons') if isinstance(result, dict) else None
-                fc_len = len(fc) if isinstance(fc, list) else 0
-            except Exception:
-                fc_len = 0
+            frames1 = extractor.extract_frames(self.video1_path, self.max_frames)
+            frames2 = extractor.extract_frames(self.video2_path, self.max_frames)
 
-            if fc_len < need:
-                # Локально извлекаем кадры и считаем сравнения
-                try:
-                    from src.core.frame_extractor import FrameExtractor
-                    from src.algorithms.comparison_manager import ComparisonManager
+            frame_comparisons = []
+            total = 0.0
+            valid = 0
+            for i in range(self.max_frames):
+                f1 = frames1[i] if i < len(frames1) else None
+                f2 = frames2[i] if i < len(frames2) else None
+                if f1 is not None and f2 is not None:
+                    cmp_res = manager.compare_images(f1, f2)
+                    overall = cmp_res.get('overall', 0.0)
+                    frame_comparisons.append({'similarity': overall, 'algorithm_details': cmp_res})
+                    total += overall
+                    valid += 1
+                else:
+                    frame_comparisons.append({'similarity': 0.0, 'algorithm_details': {}})
 
-                    extractor = FrameExtractor()
-                    manager = ComparisonManager()
-
-                    frames1 = extractor.extract_frames(self.video1_path, need)
-                    frames2 = extractor.extract_frames(self.video2_path, need)
-
-                    frame_comparisons = []
-                    total = 0.0
-                    valid = 0
-
-                    for i in range(need):
-                        f1 = frames1[i] if i < len(frames1) else None
-                        f2 = frames2[i] if i < len(frames2) else None
-
-                        if f1 is not None and f2 is not None:
-                            cmp_res = manager.compare_images(f1, f2)  # dict: overall + per-algo
-                            overall = cmp_res.get('overall', 0.0)
-                            total += overall
-                            valid += 1
-                            frame_comparisons.append({
-                                'similarity': overall,
-                                'algorithm_details': cmp_res
-                            })
-                        else:
-                            frame_comparisons.append({
-                                'similarity': 0.0,
-                                'algorithm_details': {}
-                            })
-
-                    overall_similarity = (total / valid) if valid > 0 else 0.0
-
-                    result = {
-                        'similarity': overall_similarity,
-                        'frame_comparisons': frame_comparisons
-                    }
-
-                except Exception as e:
-                    # если fallback упал — сохраняем ошибку в результате
-                    result = {'similarity': 0.0, 'error': f"fallback error: {e}", 'frame_comparisons': []}
-
-            # 3) Отправляем результат
+            overall_similarity = (total / valid) if valid > 0 else 0.0
+            result = {'similarity': overall_similarity, 'frame_comparisons': frame_comparisons}
+            self.result_signal.emit(result)
+            return
         except Exception as e:
-            result = {'similarity': 0.0, 'error': str(e), 'frame_comparisons': []}
+            # если что-то упало — логируем и пробуем стандартный путь (worker)
+            import traceback
+            tb = traceback.format_exc()
+            # не падаем — пробуем run через subprocess дальше
+            # но включим diagnostic info
+            fallback_error_info = f"frame_based_compare_failed: {e}\n{tb}"
 
+            # Для остальных алгоритмов запускаем worker в отдельном процессе
+            import subprocess, json, sys, os, shlex
+
+            # Путь к worker-скрипту (src/algorithms/compare_worker.py). main.py лежит в src/
+            # script_path: .../src/algorithms/compare_worker.py
+            script_path = os.path.join(os.path.dirname(__file__), 'algorithms', 'compare_worker.py')
+
+            # определим project_root = папка выше src
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                                        '..'))  # if __file__ is .../repo/src/main.py -> parent is .../repo/src
+            project_root = os.path.abspath(os.path.join(project_root, '..'))  # now .../repo
+
+            python_exe = sys.executable
+
+            # запускаем в project_root, чтобы worker мог импортировать src.*
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root, timeout=600)
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                result = {
+                    'similarity': 0.0,
+                    'error': f'subprocess_run_exception: {e}',
+                    'traceback': tb,
+                    'frame_comparisons': []
+                }
+                self.result_signal.emit(result)
+                return
+
+            except Exception as e:
+                # например TimeoutExpired или OSError
+                result = {'similarity': 0.0, 'error': f'subprocess_run_exception: {e}', 'frame_comparisons': []}
+                self.result_signal.emit(result)
+                return
+
+            if proc.returncode != 0:
+                err_text = proc.stderr.strip() if proc.stderr else f'returncode_{proc.returncode}'
+                # включаем также stdout для диагностики
+                result = {
+                    'similarity': 0.0,
+                    'error': f'worker_failed: {err_text}',
+                    'raw_stdout': proc.stdout,
+                    'raw_stderr': proc.stderr,
+                    'frame_comparisons': []
+                }
+                self.result_signal.emit(result)
+                return
+
+            # Парсим stdout JSON
+            out_text = proc.stdout.strip()
+            try:
+                result = json.loads(out_text) if out_text else {'similarity': 0.0, 'frame_comparisons': []}
+            except Exception as e:
+                result = {'similarity': 0.0, 'error': f'json_parse_error: {e}', 'raw_stdout': out_text,
+                          'frame_comparisons': []}
+
+        except Exception as e:
+            result = {'similarity': 0.0, 'error': f'unhandled_exception_in_compare_thread: {e}',
+                      'frame_comparisons': []}
+
+        # Отправляем результат в основной поток
         self.result_signal.emit(result)
+
 
 # =============================================================================
 # ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
@@ -191,19 +212,11 @@ class MainWindow(QMainWindow):
         icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
 
-        # if os.path.exists(icon_path):
-        #     self.setWindowIcon(QIcon(icon_path))
-        # else:
-        #     print(f"Warning: Icon not found at {icon_path}")
-        #     # Пробуем альтернативный путь
-        #     alt_path = os.path.join(os.path.dirname(__file__), "static", "logo.ico")
-        #     if os.path.exists(alt_path):
-        #         self.setWindowIcon(QIcon(alt_path))
-
         # Инициализация компонентов
         self.scanner = FileScanner()
         self.frame_extractor = FrameExtractor()
-        self.comparator = OptimizedVideoComparator()
+        self.comparator = create_algorithm('simple')
+        self.current_algorithm_name = 'simple'
 
         # Переменные состояния
         self.selected_folder = ""
@@ -234,6 +247,32 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.scan_tab, "📁 Сканирование папки")
         self.tabs.addTab(self.compare_tab, "🔍 Сравнение видео")
+
+        self.on_scan_algorithm_changed(self.algorithm_combo.currentIndex())
+        self.on_compare_algorithm_changed(self.compare_algorithm_combo.currentIndex())
+
+    def create_algorithm_instance_from_ui(self, alg_name, context='scan'):
+        """
+        Создаёт и конфигурирует экземпляр алгоритма по имени alg_name.
+        context: 'scan' или 'compare' — чтобы брать параметры с нужной вкладки.
+        """
+        alg = create_algorithm(alg_name)
+        # Если phash — установим параметры из UI соответствующей вкладки
+        try:
+            if alg_name == 'phash' and getattr(alg, 'implemented', False):
+                if context == 'scan':
+                    if hasattr(self, 'phash_frames_spin'):
+                        alg.frames_to_sample = int(self.phash_frames_spin.value())
+                    if hasattr(self, 'phash_ham_spin'):
+                        alg.ham_thresh = int(self.phash_ham_spin.value())
+                elif context == 'compare':
+                    if hasattr(self, 'compare_phash_frames_spin'):
+                        alg.frames_to_sample = int(self.compare_phash_frames_spin.value())
+                    if hasattr(self, 'compare_phash_ham_spin'):
+                        alg.ham_thresh = int(self.compare_phash_ham_spin.value())
+        except Exception:
+            pass
+        return alg
 
     def create_scan_tab(self):
         """Создает вкладку для сканирования папки с прокруткой и управлением удалением"""
@@ -266,6 +305,38 @@ class MainWindow(QMainWindow):
 
         # Настройки сканирования
         settings_layout = QHBoxLayout()
+
+        # --- выбор алгоритма (добавлено) ---
+        settings_layout.addWidget(QLabel("Алгоритм:"))
+        self.algorithm_combo = QComboBox()
+        self.algorithm_combo.addItems([
+            "Simple (original)",
+            "pHash (fast)",
+            "CNN+Faiss (advanced) — (пока не реализован)"
+        ])
+        self.algorithm_combo.setCurrentIndex(0)
+        # при смене алгоритма обновляем comparator
+        self.algorithm_combo.currentIndexChanged.connect(self.on_scan_algorithm_changed)
+        settings_layout.addWidget(self.algorithm_combo)
+        # --- конец блока ---
+
+        # --- добавляем контролы pHash (количество кадров и порог) ---
+        self.phash_frames_label = QLabel("pHash frames:")
+        settings_layout.addWidget(self.phash_frames_label)
+        self.phash_frames_spin = QSpinBox()
+        self.phash_frames_spin.setRange(1, 500)
+        self.phash_frames_spin.setValue(getattr(Config, 'PHASH_FRAMES', 30))  # sensible default
+        self.phash_frames_spin.setMaximumWidth(70)
+        settings_layout.addWidget(self.phash_frames_spin)
+
+        self.phash_ham_label = QLabel("pHash ham:")
+        settings_layout.addWidget(self.phash_ham_label)
+        self.phash_ham_spin = QSpinBox()
+        self.phash_ham_spin.setRange(1, 64)
+        self.phash_ham_spin.setValue(getattr(Config, 'PHASH_HAMMING_THRESHOLD', 12))
+        self.phash_ham_spin.setMaximumWidth(70)
+        settings_layout.addWidget(self.phash_ham_spin)
+        # --- конец блока --
 
         settings_layout.addWidget(QLabel("Порог схожести:"))
         self.similarity_threshold_input = QLineEdit(str(Config.SIMILARITY_THRESHOLD))
@@ -448,6 +519,41 @@ class MainWindow(QMainWindow):
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         layout.addWidget(title_label)
 
+        # Выбор алгоритма сравнения
+        comp_layout = QHBoxLayout()
+        comp_layout.addWidget(QLabel("Алгоритм сравнения:"))
+        self.compare_algorithm_combo = QComboBox()
+        self.compare_algorithm_combo.addItems([
+            "Simple (original)",
+            "pHash (fast)",
+            "CNN+Faiss (advanced) — (пока не реализован)"
+        ])
+        # синхронизируем с основным combobox: при смене вызываем ту же функцию
+        self.compare_algorithm_combo.currentIndexChanged.connect(self.on_compare_algorithm_changed)
+        comp_layout.addWidget(self.compare_algorithm_combo)
+
+        # Добавляем блок управления pHash для compare-tab (скрываем по умолчанию)
+
+        self.compare_phash_ham_label = QLabel("pHash ham:")
+        comp_layout.addWidget(self.compare_phash_ham_label)
+        self.compare_phash_ham_spin = QSpinBox()
+        self.compare_phash_ham_spin.setRange(1, 64)
+        self.compare_phash_ham_spin.setValue(getattr(Config, 'PHASH_HAMMING_THRESHOLD', 12))
+        self.compare_phash_ham_spin.setMaximumWidth(70)
+        comp_layout.addWidget(self.compare_phash_ham_spin)
+
+        # добавляем наш comp_layout в основной layout вкладки
+        # Оборачиваем HBox в контейнерный QWidget и добавляем его с левым выравниванием
+        comp_container = QWidget()
+        comp_container.setLayout(comp_layout)
+
+        # Ограничим максимальную ширину комбобокса, чтобы он не растягивался слишком сильно
+        self.compare_algorithm_combo.setMaximumWidth(300)  # например 300px, можно уменьшить/увеличить
+
+        # Добавляем контейнер в основной layout с выравниванием влево
+        from PyQt6.QtCore import Qt
+        layout.addWidget(comp_container, alignment=Qt.AlignmentFlag.AlignLeft)
+
         # Выбор первого видео
         video1_layout = QHBoxLayout()
         self.select_video1_btn = QPushButton("Выбрать первое видео")
@@ -580,11 +686,15 @@ class MainWindow(QMainWindow):
         self.log_text.append("─" * 50)
 
         # Запускаем сканирование в отдельном потоке
-        self.optimized_scan_thread = OptimizedScanThread(
-            self.comparator,
-            self.selected_folder,
-            threshold
-        )
+        # перед созданием потока — определяем имя алгоритма из combobox на вкладке Scan
+        mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
+        alg_index = self.algorithm_combo.currentIndex()
+        alg_name = mapping.get(alg_index, 'simple')
+        comparator = self.create_algorithm_instance_from_ui(alg_name, context='scan')
+
+        # далее используем comparator при создании OptimizedScanThread
+        self.optimized_scan_thread = OptimizedScanThread(comparator, self.selected_folder, threshold)
+
         self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
         self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
         self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
@@ -1245,7 +1355,13 @@ class MainWindow(QMainWindow):
         max_frames = self.frame_count_spin.value() if hasattr(self, 'frame_count_spin') else 10
 
         # Запускаем сравнение в отдельном потоке, передавая max_frames
-        self.compare_thread = CompareThread(self.comparator, self.video1_path, self.video2_path, max_frames=max_frames)
+        mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
+        idx = self.compare_algorithm_combo.currentIndex()
+        alg_name = mapping.get(idx, 'simple')
+        comparator = self.create_algorithm_instance_from_ui(alg_name, context='compare')
+
+        # затем
+        self.compare_thread = CompareThread(comparator, self.video1_path, self.video2_path, max_frames=max_frames)
         self.compare_thread.result_signal.connect(self.show_comparison_result)
         self.compare_thread.start()
 
@@ -1550,6 +1666,111 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Ошибка при завершении приложения: {e}")
             event.accept()  # Все равно принимаем закрытие
+
+    def on_algorithm_changed(self, index):
+        """Обработчик смены алгоритма в UI (синхронизируем оба combobox'а)"""
+        mapping = {
+            0: 'simple',
+            1: 'phash',
+            2: 'cnn_faiss'
+        }
+        name = mapping.get(index, 'simple')
+
+        # синхронизировать второй combobox без рекурсии
+        try:
+            if hasattr(self, 'compare_algorithm_combo'):
+                # если index отличается — заблокировать сигнал и установить
+                if self.compare_algorithm_combo.currentIndex() != index:
+                    self.compare_algorithm_combo.blockSignals(True)
+                    self.compare_algorithm_combo.setCurrentIndex(index)
+                    self.compare_algorithm_combo.blockSignals(False)
+            if hasattr(self, 'algorithm_combo'):
+                if self.algorithm_combo.currentIndex() != index:
+                    self.algorithm_combo.blockSignals(True)
+                    self.algorithm_combo.setCurrentIndex(index)
+                    self.algorithm_combo.blockSignals(False)
+        except Exception:
+            pass
+
+        # Установим comparator с учётом параметров pHash (если применимо)
+        self.set_comparator_from_selection(name)
+
+    def on_scan_algorithm_changed(self, index):
+        mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
+        name = mapping.get(index, 'simple')
+        is_phash = (name == 'phash')
+
+        # показываем/скрываем элементы pHash на вкладке Scan
+        try:
+            if hasattr(self, 'phash_frames_label'):
+                self.phash_frames_label.setVisible(is_phash)
+            if hasattr(self, 'phash_frames_spin'):
+                self.phash_frames_spin.setVisible(is_phash)
+
+            if hasattr(self, 'phash_ham_label'):
+                self.phash_ham_label.setVisible(is_phash)
+            if hasattr(self, 'phash_ham_spin'):
+                self.phash_ham_spin.setVisible(is_phash)
+        except Exception as e:
+            print("on_scan_algorithm_changed error:", e)
+
+    def on_compare_algorithm_changed(self, index):
+        mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
+        name = mapping.get(index, 'simple')
+        is_phash = (name == 'phash')
+
+        # показываем/скрываем элементы pHash на вкладке Compare
+        try:
+            if hasattr(self, 'compare_phash_frames_label'):
+                self.compare_phash_frames_label.setVisible(is_phash)
+            if hasattr(self, 'compare_phash_frames_spin'):
+                self.compare_phash_frames_spin.setVisible(is_phash)
+
+            if hasattr(self, 'compare_phash_ham_label'):
+                self.compare_phash_ham_label.setVisible(is_phash)
+            if hasattr(self, 'compare_phash_ham_spin'):
+                self.compare_phash_ham_spin.setVisible(is_phash)
+        except Exception as e:
+            print("on_compare_algorithm_changed error:", e)
+
+    def set_comparator_from_selection(self, name: str):
+        """
+        Создаёт comparator через фабрику и при необходимости уведомляет пользователя,
+        если выбранный алгоритм ещё не реализован — в этом случае будет использован simple.
+        Также передаёт параметры pHash, если они есть в UI.
+        """
+        alg = create_algorithm(name)
+        # Если phash доступен, попробуем установить кастомные параметры
+        try:
+            if name == 'phash':
+                # берем значения из UI, если они есть
+                frames_val = getattr(self, 'phash_frames_spin', None)
+                ham_val = getattr(self, 'phash_ham_spin', None)
+                if frames_val is not None and ham_val is not None:
+                    try:
+                        # если объект поддерживает поля, установим их
+                        if hasattr(alg, 'frames_to_sample'):
+                            alg.frames_to_sample = int(self.phash_frames_spin.value())
+                        if hasattr(alg, 'ham_thresh'):
+                            alg.ham_thresh = int(self.phash_ham_spin.value())
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        if not getattr(alg, 'implemented', True):
+            QMessageBox.information(
+                self,
+                "Алгоритм временно недоступен",
+                f"Алгоритм '{name}' пока не реализован в этой ветке.\n"
+                "Будет использован режим 'Simple (original)'."
+            )
+            alg = create_algorithm('simple')
+            self.current_algorithm_name = 'simple'
+        else:
+            self.current_algorithm_name = name
+
+        self.comparator = alg
 
 # =============================================================================
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
