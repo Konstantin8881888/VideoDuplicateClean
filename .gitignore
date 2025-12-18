@@ -137,3 +137,4 @@ crashlytics.properties
 crashlytics-build.properties
 fabric.properties
 /src/user_settings.json
+./__pycache__/
