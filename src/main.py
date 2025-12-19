@@ -90,6 +90,18 @@ class OptimizedScanThread(QThread):
                 self.similarity_threshold
             )
 
+            # ----- ДЕДУПЛИКАЦИЯ ПАР -----
+            seen = set()
+            unique_pairs = []
+            for video1, video2, similarity, details in similar_pairs:
+                key = tuple(sorted([video1, video2]))
+                if key not in seen:
+                    seen.add(key)
+                    unique_pairs.append((video1, video2, similarity, details))
+            similar_pairs = unique_pairs
+            print(f"DEBUG: после дедупликации осталось {len(similar_pairs)} уникальных пар")
+            # ---------------------------
+
             self.progress_signal.emit(90, f"Анализ завершен")
 
             # Отправляем результаты в основной поток
@@ -1067,6 +1079,20 @@ class MainWindow(QMainWindow):
     def create_pair_buttons(self, pairs: list):
         """Создает виджеты для пар с защитой от переполнения"""
         try:
+            # # ----- ДЕДУПЛИКАЦИЯ ПАР ПЕРЕД ОТОБРАЖЕНИЕМ -----
+            # seen = set()
+            # unique_pairs = []
+            # for video1, video2, similarity, details in pairs:
+            #     # Нормализуем порядок файлов в паре
+            #     key = tuple(sorted([video1, video2]))
+            #     if key not in seen:
+            #         seen.add(key)
+            #         unique_pairs.append((video1, video2, similarity, details))
+            #
+            # pairs = unique_pairs
+            # print(f"DEBUG: после дедупликации осталось {len(pairs)} уникальных пар")
+            # -------------------------------------------------
+
             print(f"DEBUG: create_pair_buttons начат, пар: {len(pairs)}")
 
             # Проверяем, что методы существуют
