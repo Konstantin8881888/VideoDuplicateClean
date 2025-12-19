@@ -7,6 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('static/logo.ico', 'static'),
+        ('static/license.txt', 'static'),
         ('src', 'src'),  # ←копирует папку src в EXE
     ],
     hiddenimports=[

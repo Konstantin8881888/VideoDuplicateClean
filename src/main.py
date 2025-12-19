@@ -27,42 +27,75 @@ from src.algorithms import create_algorithm
 # =============================================================================
 
 class OptimizedScanThread(QThread):
-    """Поток для оптимизированного сканирования папки"""
+    """Поток для оптимизированного сканирования всех папок"""
 
     # Сигналы для обновления UI из потока
     progress_signal = pyqtSignal(int, str)  # прогресс (проценты, сообщение)
     result_signal = pyqtSignal(list)  # финальные результаты
     finished_signal = pyqtSignal()  # завершение работы
 
-    def __init__(self, comparator, folder_path, similarity_threshold=None):
+    def __init__(self, comparator, folder_paths, similarity_threshold=None):
+        """
+        Инициализация потока
+
+        Args:
+            comparator: объект для сравнения видео
+            folder_paths: ОДНА папка (str) или СПИСОК папок (list)
+            similarity_threshold: порог схожести
+        """
         super().__init__()
         self.comparator = comparator
-        self.folder_path = folder_path
+        # Делаем всегда списком, даже если передали одну папку
+        if isinstance(folder_paths, str):
+            self.folder_paths = [folder_paths]
+        else:
+            self.folder_paths = folder_paths
         self.similarity_threshold = similarity_threshold if similarity_threshold is not None else Config.SIMILARITY_THRESHOLD
         self.scanner = FileScanner()
 
     def run(self):
         """Основной метод, который выполняется в потоке"""
         try:
-            self.progress_signal.emit(0, "Поиск видеофайлов...")
+            all_video_files = []
+            total_folders = len(self.folder_paths)
 
-            # Находим все видеофайлы
-            video_files = self.scanner.find_video_files(self.folder_path)
+            # ШАГ 1: Собираем ВСЕ видео из ВСЕХ папок
+            for i, folder in enumerate(self.folder_paths, 1):
+                progress = int((i - 1) / total_folders * 40)  # первые 40% на сбор файлов
+                self.progress_signal.emit(
+                    progress,
+                    f"Сканирую папку {i}/{total_folders}: {os.path.basename(folder)}"
+                )
 
-            if not video_files:
+                # Находим видео в текущей папке
+                video_files = self.scanner.find_video_files(folder)
+                all_video_files.extend(video_files)
+
+                self.progress_signal.emit(
+                    progress + 5,
+                    f"Папка {i}: найдено {len(video_files)} видео"
+                )
+
+            if not all_video_files:
                 self.result_signal.emit([])
                 return
 
-            self.progress_signal.emit(10, f"Найдено {len(video_files)} видеофайлов")
+            self.progress_signal.emit(50, f"Всего найдено {len(all_video_files)} видеофайлов")
 
-            # Запускаем оптимизированный поиск похожих видео
+            # ШАГ 2: Ищем похожие видео среди ВСЕХ собранных файлов
+            self.progress_signal.emit(60, "Анализирую схожесть видео...")
+
             similar_pairs = self.comparator.find_similar_videos_optimized(
-                video_files,
+                all_video_files,
                 self.similarity_threshold
             )
 
+            self.progress_signal.emit(90, f"Анализ завершен")
+
             # Отправляем результаты в основной поток
             self.result_signal.emit(similar_pairs)
+
+            self.progress_signal.emit(100, f"Найдено {len(similar_pairs)} пар похожих видео")
 
         except Exception as e:
             print(f"Ошибка в потоке сканирования: {e}")
@@ -189,7 +222,6 @@ class CompareThread(QThread):
         # Отправляем результат в основной поток
         self.result_signal.emit(result)
 
-
 # =============================================================================
 # ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
 # =============================================================================
@@ -207,11 +239,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 1000, 800)  # Увеличили высоту окна
+        self.setGeometry(100, 100, 1100, 800)  # Увеличили высоту окна
 
         icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
 
+        self.log_counter = 0
         # Инициализация компонентов
         self.scanner = FileScanner()
         self.frame_extractor = FrameExtractor()
@@ -219,7 +252,7 @@ class MainWindow(QMainWindow):
         self.current_algorithm_name = 'simple'
 
         # Переменные состояния
-        self.selected_folder = ""
+        self.selected_folders = []  # ← список папок
         self.video1_path = ""
         self.video2_path = ""
         self.current_pairs = []
@@ -234,6 +267,14 @@ class MainWindow(QMainWindow):
 
         # Создаем интерфейс
         self.setup_ui()
+
+    def safe_log(self, message):
+        """Безопасное логирование с защитой от рекурсии"""
+        self.log_counter += 1
+        if self.log_counter > 1000:  # защита от бесконечного цикла
+            print(f"ERROR: Too many log calls: {message}")
+            return
+        self.log_text.append(message)
 
     def setup_ui(self):
         """Создает весь пользовательский интерфейс"""
@@ -299,9 +340,74 @@ class MainWindow(QMainWindow):
         self.select_button.clicked.connect(self.select_folder)
         folder_layout.addWidget(self.select_button)
 
-        self.selected_folder_label = QLabel("Папка не выбрана")
+        self.selected_folder_label = QLabel("Папки не выбраны")
         folder_layout.addWidget(self.selected_folder_label)
         layout.addLayout(folder_layout)
+
+        # Растягивающийся элемент
+        folder_layout.addStretch()
+
+        # Кнопка лицензии
+        self.license_button = QPushButton("📜 Ознакомиться с лицензией")
+        self.license_button.clicked.connect(self.show_license)
+        self.license_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+                padding: 5px 10px;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        folder_layout.addWidget(self.license_button)
+
+        # ВТОРОЙ РЯД: Управление списком папок
+        folder_control_layout = QHBoxLayout()
+
+        # Пустое пространство слева
+        folder_control_layout.addStretch()
+
+        # Кнопка удаления последней папки
+        self.remove_last_btn = QPushButton("↶ Удалить последнюю папку")
+        self.remove_last_btn.clicked.connect(self.remove_last_folder)
+        self.remove_last_btn.setToolTip("Удалить последнюю добавленную папку")
+        self.remove_last_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fff3cd;
+                border: 1px solid #ffeaa7;
+                padding: 5px 10px;
+                font-size: 9pt;
+                margin-right: 5px;
+            }
+            QPushButton:hover {
+                background-color: #ffeaa7;
+            }
+        """)
+        self.remove_last_btn.setEnabled(False)
+        folder_control_layout.addWidget(self.remove_last_btn)
+
+        # Кнопка очистки всех папок
+        self.clear_folders_btn = QPushButton("🗑️ Очистить список")
+        self.clear_folders_btn.clicked.connect(self.clear_folders)
+        self.clear_folders_btn.setToolTip("Очистить весь список выбранных папок")
+        self.clear_folders_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffebee;
+                border: 1px solid #ffcdd2;
+                padding: 5px 10px;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: #ffcdd2;
+            }
+        """)
+        self.clear_folders_btn.setEnabled(False)
+        folder_control_layout.addWidget(self.clear_folders_btn)
+
+        layout.addLayout(folder_control_layout)
+
 
         # Настройки сканирования
         settings_layout = QHBoxLayout()
@@ -621,6 +727,162 @@ class MainWindow(QMainWindow):
 
         return widget
 
+    def clear_folders(self):
+        """Очищает список выбранных папок"""
+        if not self.selected_folders:
+            return
+
+        # Подтверждение
+        reply = QMessageBox.question(
+            self,
+            "Очистить список папок",
+            f"Вы уверены, что хотите очистить список из {len(self.selected_folders)} папок?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Запоминаем для лога
+            removed_count = len(self.selected_folders)
+            removed_names = [os.path.basename(f) for f in self.selected_folders[:3]]
+
+            # Очищаем список
+            self.selected_folders.clear()
+
+            # Обновляем UI
+            self.selected_folder_label.setText("Папки не выбраны")
+            self.clear_folders_btn.setEnabled(False)
+
+            # Логируем
+            self.log_text.append(f"🗑️ Очищен список папок ({removed_count} папок)")
+            if removed_names:
+                self.log_text.append(f"   Удалены: {', '.join(removed_names)}" +
+                                     ("..." if removed_count > 3 else ""))
+
+    def check_folder_nesting(self, new_folder):
+        """
+        Проверяет нет ли вложенности между новой папкой и уже выбранными
+
+        Возвращает:
+        - True если всё ок (нет вложенности)
+        - False если есть проблема (вложенность или дублирование)
+        """
+        if not hasattr(self, 'selected_folders') or not self.selected_folders:
+            return True
+
+        new_folder = os.path.normpath(new_folder)
+
+        for existing_folder in self.selected_folders:
+            existing_folder = os.path.normpath(existing_folder)
+
+            # Проверка: новая папка внутри существующей
+            if new_folder.startswith(existing_folder + os.sep):
+                # Находим разницу в путях для сообщения
+                relative_path = os.path.relpath(new_folder, existing_folder)
+                self.show_warning(
+                    f"Папка '{os.path.basename(new_folder)}' уже содержится "
+                    f"в выбранной папке '{os.path.basename(existing_folder)}'.\n"
+                    f"Путь: {relative_path}\n\n"
+                    f"Достаточно выбрать только родительскую папку."
+                )
+                return False
+
+            # Проверка: существующая папка внутри новой
+            if existing_folder.startswith(new_folder + os.sep):
+                relative_path = os.path.relpath(existing_folder, new_folder)
+                self.show_warning(
+                    f"Выбранная папка '{os.path.basename(existing_folder)}' "
+                    f"уже содержится в добавляемой папке '{os.path.basename(new_folder)}'.\n"
+                    f"Путь: {relative_path}\n\n"
+                    f"Достаточно выбрать только родительскую папку."
+                )
+                return False
+
+            # Проверка: это одна и та же папка (уже обрабатывается в select_folder)
+            if new_folder == existing_folder:
+                return False
+
+        return True
+
+    def remove_last_folder(self):
+        """Удаляет последнюю добавленную папку"""
+        try:
+            if not self.selected_folders:
+                return
+
+            # Удаляем папку
+            last_folder = self.selected_folders.pop()
+            self.log_text.append(f"↶ Удалена последняя папка: {os.path.basename(last_folder)}")
+
+            # ОБНОВЛЯЕМ НАДПИСЬ
+            if self.selected_folders:
+                # Есть папки - показываем список
+                label_text = f"Выбрано папок: {len(self.selected_folders)}"
+                names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
+                label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
+            else:
+                # Нет папок - стандартный текст
+                label_text = "Папки не выбраны"
+
+            # Устанавливаем текст НАПРЯМУЮ
+            self.selected_folder_label.setText(label_text)
+
+            # Отключаем кнопки если список пуст
+            if not self.selected_folders:
+                self.clear_folders_btn.setEnabled(False)
+                self.remove_last_btn.setEnabled(False)
+
+        except Exception as e:
+            print(f"ERROR in remove_last_folder: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def show_license(self):
+        """Показывает окно с текстом лицензии"""
+
+        # Создаем диалоговое окно
+        dialog = QDialog(self)
+        dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
+        dialog.setGeometry(200, 200, 700, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Заголовок
+        title_label = QLabel("Актуальный текст лицензионного соглашения:")
+        title_label.setStyleSheet("font-weight: bold; font-size: 11pt; margin: 10px;")
+        layout.addWidget(title_label)
+
+        # Поле с текстом лицензии
+        license_text = QTextEdit()
+        license_text.setReadOnly(True)
+
+        # Используем существующую функцию load_license_text()
+        license_content = load_license_text()  # ← вызов существующей функции!
+        license_text.setPlainText(license_content)
+
+        layout.addWidget(license_text)
+
+        # Кнопка закрытия
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(dialog.accept)
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Показать окно
+        dialog.exec()
+
     def clear_all_marks(self):
         """Очищает все отметки удаления"""
         if not self.marked_for_deletion:
@@ -649,56 +911,124 @@ class MainWindow(QMainWindow):
 
     def select_folder(self):
         """Выбирает папку для сканирования"""
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
-        if folder:
-            self.selected_folder = folder
-            self.selected_folder_label.setText(f"Выбрана: {os.path.basename(folder)}")
-            self.log_text.append(f"📁 Выбрана папка: {folder}")
+        try:
+            folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сканирования")
+            print(f"DEBUG: Selected folder: {folder}")
+
+            if folder:
+                # Проверяем что атрибут существует
+                if not hasattr(self, 'selected_folders'):
+                    self.selected_folders = []  # создаём если нет
+                    print("DEBUG: Created selected_folders list")
+
+                # Проверяем дубликат
+                if folder not in self.selected_folders:
+                    # ДОБАВЛЯЕМ новую папку
+                    self.selected_folders.append(folder)
+                    print(f"DEBUG: Added folder. Total: {len(self.selected_folders)}")
+
+                    # Обновляем метку
+                    label_text = f"Выбрано папок: {len(self.selected_folders)}"
+                    if self.selected_folders:
+                        names = [os.path.basename(f) for f in self.selected_folders[-3:]]  # последние 3
+                        label_text += f" ({', '.join(names)}" + ("..." if len(self.selected_folders) > 3 else "") + ")"
+
+                    self.selected_folder_label.setText(label_text)
+
+                    # ВКЛЮЧАЕМ кнопки очистки
+                    self.clear_folders_btn.setEnabled(True)
+                    self.remove_last_btn.setEnabled(True)
+
+                    self.log_text.append(f"📁 Добавлена папка: {os.path.basename(folder)}")
+                else:
+                    # ПАПКА УЖЕ В СПИСКЕ
+                    print("DEBUG: Folder already in list")
+                    self.log_text.append(f"⚠ Папка уже в списке: {os.path.basename(folder)}")
+
+                # 2. Проверка на вложенность с уже выбранными папками
+                if not self.check_folder_nesting(folder):
+                    return  # не добавляем папку
+
+            else:
+                # Пользователь отменил выбор (folder = "")
+                print("DEBUG: User cancelled folder selection")
+
+
+        except Exception as e:
+            print(f"ERROR in select_folder: {e}")
+            import traceback
+            traceback.print_exc()
+
 
     def start_optimized_scan(self):
-        """Запускает оптимизированное сканирование папки"""
-        if not self.selected_folder:
-            self.show_warning("Сначала выберите папку для сканирования!")
-            return
-
-        # Получаем и проверяем порог схожести
+        """Запускает оптимизированное сканирование всех выбранных папок"""
         try:
-            threshold_text = self.similarity_threshold_input.text()
-            threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
-            if not (0.1 <= threshold <= 1.0):
-                raise ValueError("Порог должен быть между 0.1 и 1.0")
-        except ValueError as e:
-            self.show_warning(f"Некорректный порог схожести: {e}")
-            return
+            print(f"DEBUG: Starting scan with folders: {self.selected_folders}")
 
-        # Блокируем UI на время сканирования
-        self.set_scan_ui_enabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+            if not self.selected_folders:
+                self.show_warning("Сначала выберите хотя бы одну папку для сканирования!")
+                return
 
-        # Очищаем предыдущие кнопки групп
-        self.clear_pair_buttons()
+            # Проверка порога
+            try:
+                threshold_text = self.similarity_threshold_input.text()
+                threshold = float(threshold_text) if threshold_text else Config.SIMILARITY_THRESHOLD
+                if not (0.1 <= threshold <= 1.0):
+                    raise ValueError("Порог должен быть между 0.1 и 1.0")
+            except ValueError as e:
+                self.show_warning(f"Некорректный порог схожести: {e}")
+                return
 
-        self.log_text.clear()
-        self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
-        self.log_text.append(f"📁 Папка: {self.selected_folder}")
-        self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
-        self.log_text.append("─" * 50)
+            print(f"DEBUG: Threshold: {threshold}")
 
-        # Запускаем сканирование в отдельном потоке
-        # перед созданием потока — определяем имя алгоритма из combobox на вкладке Scan
-        mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
-        alg_index = self.algorithm_combo.currentIndex()
-        alg_name = mapping.get(alg_index, 'simple')
-        comparator = self.create_algorithm_instance_from_ui(alg_name, context='scan')
+            # Блокируем UI на время сканирования
+            self.set_scan_ui_enabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
 
-        # далее используем comparator при создании OptimizedScanThread
-        self.optimized_scan_thread = OptimizedScanThread(comparator, self.selected_folder, threshold)
+            # Очищаем предыдущие результаты
+            self.clear_pair_buttons()
+            self.log_text.clear()
 
-        self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
-        self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
-        self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
-        self.optimized_scan_thread.start()
+            self.log_text.append("🚀 ЗАПУСК ОПТИМИЗИРОВАННОГО СКАНИРОВАНИЯ")
+            for i, folder in enumerate(self.selected_folders, 1):
+                self.log_text.append(f"📁 Папка {i}: {folder}")
+            self.log_text.append(f"🎯 Порог схожести: {threshold:.0%}")
+            self.log_text.append(f"📊 Всего папок: {len(self.selected_folders)}")
+            self.log_text.append("─" * 50)
+
+            print(f"DEBUG: Creating OptimizedScanThread...")
+
+            # Запускаем поток
+            # перед созданием потока — определяем имя алгоритма из combobox на вкладке Scan
+            mapping = {0: 'simple', 1: 'phash', 2: 'cnn_faiss'}
+            alg_index = self.algorithm_combo.currentIndex()
+            alg_name = mapping.get(alg_index, 'simple')
+            comparator = self.create_algorithm_instance_from_ui(alg_name, context='scan')
+
+            # далее используем comparator при создании OptimizedScanThread
+            self.optimized_scan_thread = OptimizedScanThread(comparator, self.selected_folders, threshold)
+
+
+            print(f"DEBUG: Connecting signals...")
+
+            # Подключаем сигналы
+            self.optimized_scan_thread.progress_signal.connect(self.update_optimized_progress)
+            self.optimized_scan_thread.result_signal.connect(self.optimized_scan_finished)
+            self.optimized_scan_thread.finished_signal.connect(self.scan_thread_finished)
+
+            print(f"DEBUG: Starting thread...")
+            self.optimized_scan_thread.start()
+
+            print(f"DEBUG: Thread started successfully")
+
+        except Exception as e:
+            print(f"ERROR in start_optimized_scan: {e}")
+            import traceback
+            traceback.print_exc()
+            # Разблокируем UI в случае ошибки
+            self.set_scan_ui_enabled(True)
+            self.progress_bar.setVisible(False)
 
     def update_optimized_progress(self, value: int, message: str):
         """Обновляет прогресс сканирования"""
@@ -1776,6 +2106,34 @@ class MainWindow(QMainWindow):
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
 # =============================================================================
 
+def load_license_text():
+    """Загружает текст лицензии из файла"""
+    try:
+        # Пробуем разные пути
+        possible_paths = [
+            resource_path("static/license.txt"),
+            os.path.join("static", "license.txt"),
+            os.path.join(os.path.dirname(__file__), "static", "license.txt"),
+        ]
+
+        for license_path in possible_paths:
+            if os.path.exists(license_path):
+                with open(license_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+
+        # Fallback: если файл не найден
+        return """
+        ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
+
+        [Файл license.txt не найден]
+
+        Программа предоставляется "как есть".
+        """
+
+    except Exception as e:
+        return f"Ошибка загрузки лицензии: {e}"
+
+
 def check_license() -> bool:
     """Проверяет принятие лицензии, возвращает True если принята"""
     config_file = "user_settings.json"
@@ -1789,10 +2147,13 @@ def check_license() -> bool:
         except:
             pass
 
+    # Загружаем лицензию из файла
+    license_content = load_license_text()
+
     # Создаем кастомное диалоговое окно
     dialog = QDialog()
     dialog.setWindowTitle("VideoDuplicate Cleaner - Лицензионное соглашение")
-    dialog.setGeometry(100, 100, 600, 400)  # ← РАЗМЕР ОКНА
+    dialog.setGeometry(100, 100, 600, 400)
 
     layout = QVBoxLayout(dialog)
 
@@ -1802,23 +2163,9 @@ def check_license() -> bool:
     layout.addWidget(title_label)
 
     # Поле с текстом лицензии (прокручиваемое)
-    license_text = QTextEdit()
+    license_text = QTextEdit()  # ← СОЗДАЛИ ПЕРЕМЕННУЮ
     license_text.setReadOnly(True)
-    license_text.setPlainText("""
-    ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ
-
-    1. Программа предоставляется "как есть"
-    2. Автор не несёт ответственности за удалённые файлы
-    3. Вы используете программу на свой страх и риск
-    4. Перед удалением делайте бэкапы важных данных
-    5. Вы не можете распространять программу без разрешения автора
-    6. Коммерческое использование запрещено без разрешения автора
-    7. Все права принадлежат автору
-
-    Полный текст лицензии будет доступен в следующих версиях.
-
-    Нажимая "Принимаю", вы соглашаетесь с условиями использования.
-    """)
+    license_text.setPlainText(license_content)
     layout.addWidget(license_text)
 
     # Кнопки
