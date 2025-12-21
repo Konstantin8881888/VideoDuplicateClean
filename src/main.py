@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 1100, 800)  # Увеличили высоту окна
+        self.setGeometry(30, 50, 1100, 800)  # Увеличили высоту окна
 
         icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
@@ -1162,7 +1162,7 @@ class MainWindow(QMainWindow):
         filtered_results = self.filter_excluded_pairs(results)
 
         self.log_text.append(f"📊 Найдено пар похожих видео: {len(results)}")
-        self.log_text.append(f"📊 После фильтрации чёрного списка: {len(filtered_results)}")
+        self.log_text.append(f"📊 После фильтрации чёрного списка осталось: {len(filtered_results)}")
 
         # Сохраняем пары для последующего использования
         if len(results) != len(filtered_results):
@@ -1209,10 +1209,7 @@ class MainWindow(QMainWindow):
                 filtered_pairs.append(pair)
             else:
                 excluded_count += 1
-                if file1_excluded:
-                    self.log_text.append(f"🚫 Исключена пара (файл 1 в чёрном списке): {os.path.basename(video1)}")
-                if file2_excluded:
-                    self.log_text.append(f"🚫 Исключена пара (файл 2 в чёрном списке): {os.path.basename(video2)}")
+
 
         if excluded_count > 0:
             self.log_text.append(f"📊 Исключено пар из чёрного списка: {excluded_count}")
