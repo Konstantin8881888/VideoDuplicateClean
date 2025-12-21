@@ -107,7 +107,7 @@ class OptimizedScanThread(QThread):
             # Отправляем результаты в основной поток
             self.result_signal.emit(similar_pairs)
 
-            self.progress_signal.emit(100, f"Найдено {len(similar_pairs)} пар похожих видео")
+            self.progress_signal.emit(100, "Передаю результаты для фильтрации")
 
         except Exception as e:
             print(f"Ошибка в потоке сканирования: {e}")
@@ -1168,7 +1168,7 @@ class MainWindow(QMainWindow):
         if len(results) != len(filtered_results):
             self.log_text.append(f"🚫 Исключено пар: {len(results) - len(filtered_results)}")
 
-        self.status_label.setText(f"Найдено {len(filtered_results)} пар похожих видео")
+        self.status_label.setText(f"Найдено {len(filtered_results)} пары похожих видео")
 
         # Сохраняем отфильтрованные пары
         self.current_pairs = filtered_results
@@ -1176,14 +1176,31 @@ class MainWindow(QMainWindow):
         # Создаем кнопки для ОТФИЛЬТРОВАННЫХ пар
         self.create_pair_buttons(filtered_results)  # ← передаём отфильтрованные!
 
-        # Показываем СВОДКУ пар в логе (не все детали)
-        high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
-        medium_similarity = sum(1 for _, _, sim, _ in results if 0.6 <= sim <= 0.8)
-        low_similarity = sum(1 for _, _, sim, _ in results if sim < 0.6)
+        # ВАЖНО: Статистику считаем по ОТФИЛЬТРОВАННЫМ парам!
+        if filtered_results:
+            high_similarity = sum(1 for _, _, sim, _ in filtered_results if sim > 0.8)
+            medium_similarity = sum(1 for _, _, sim, _ in filtered_results if 0.6 <= sim <= 0.8)
+            low_similarity = sum(1 for _, _, sim, _ in filtered_results if sim < 0.6)
 
-        self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
-        self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
-        self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
+            self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
+            self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
+            self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
+        else:
+            self.log_text.append("📊 Нет пар для анализа схожести")
+
+        # Лог для отладки
+        print(f"DEBUG: Total pairs: {len(results)}, Filtered: {len(filtered_results)}")
+        if filtered_results:
+            print(f"DEBUG: Similarities in filtered: {[sim for _, _, sim, _ in filtered_results[:5]]}")
+
+        # Показываем СВОДКУ пар в логе (не все детали)
+        # high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
+        # medium_similarity = sum(1 for _, _, sim, _ in results if 0.6 <= sim <= 0.8)
+        # low_similarity = sum(1 for _, _, sim, _ in results if sim < 0.6)
+        #
+        # self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
+        # self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
+        # self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
 
         # Создаем кнопки для сравнения КАЖДОЙ пары
         # self.create_pair_buttons(results)
