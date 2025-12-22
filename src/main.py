@@ -1195,18 +1195,6 @@ class MainWindow(QMainWindow):
 
 
 
-        # Показываем СВОДКУ пар в логе (не все детали)
-        # high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
-        # medium_similarity = sum(1 for _, _, sim, _ in results if 0.6 <= sim <= 0.8)
-        # low_similarity = sum(1 for _, _, sim, _ in results if sim < 0.6)
-        #
-        # self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
-        # self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
-        # self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
-
-        # Создаем кнопки для сравнения КАЖДОЙ пары
-        # self.create_pair_buttons(results)
-
     def filter_excluded_pairs(self, pairs):
         """Фильтрует пары, исключая те, где файлы в чёрном списке"""
         if not hasattr(self, 'excluded_folders') or not self.excluded_folders:
