@@ -900,15 +900,12 @@ class MainWindow(QMainWindow):
         clear_btn.clicked.connect(lambda: self.clear_excluded_folders(dialog))
         clear_btn.setEnabled(bool(self.excluded_folders))
 
-        # add_btn = QPushButton("➕ Добавить папку")
-        # add_btn.clicked.connect(lambda: self.add_to_excluded_from_dialog(dialog))
-
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(dialog.accept)
 
         button_layout.addWidget(remove_btn)
         button_layout.addWidget(clear_btn)
-        #button_layout.addWidget(add_btn)
+
         button_layout.addWidget(close_btn)
 
         layout.addLayout(button_layout)
@@ -1072,19 +1069,6 @@ class MainWindow(QMainWindow):
             dialog.accept()
             self.log_text.append("📋 Чёрный список полностью очищен")
 
-    # def add_to_excluded_from_dialog(self, dialog):
-    #     """Добавляет папку в чёрный список из диалога управления"""
-    #     folder = QFileDialog.getExistingDirectory(
-    #         dialog,
-    #         "Выберите папку для добавления в чёрный список"
-    #     )
-    #
-    #     if folder and folder not in self.excluded_folders:
-    #         self.excluded_folders.append(folder)
-    #         self.save_excluded_folders()
-    #         dialog.accept()  # Закрываем и переоткрываем чтобы обновить список
-    #         self.manage_excluded_folders()
-    #         self.log_text.append(f"📋 Добавлена в чёрный список: {os.path.basename(folder)}")
 
     def show_license(self):
         """Показывает окно с текстом лицензии"""
