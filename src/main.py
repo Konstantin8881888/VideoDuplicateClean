@@ -7,7 +7,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel,
     QFileDialog, QTextEdit, QProgressBar, QTabWidget, QHBoxLayout,
-    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog, QComboBox
+    QLineEdit, QMessageBox, QScrollArea, QCheckBox, QSpinBox, QDialog, QComboBox, QListWidget, QListWidgetItem,
 )
 
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt
@@ -409,6 +409,24 @@ class MainWindow(QMainWindow):
             }
         """)
         folder_control_layout.addWidget(self.exclude_folder_btn)
+
+        # Редактирование ЧС
+        self.manage_excluded_btn = QPushButton("📋 Управление чёрным списком")
+        self.manage_excluded_btn.clicked.connect(self.manage_excluded_folders)
+        self.manage_excluded_btn.setToolTip("Управление чёрным списком папок")
+        self.manage_excluded_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e3f2fd;
+                border: 1px solid #bbdefb;
+                padding: 5px 10px;
+                font-size: 9pt;
+                margin-right: 5px;
+            }
+            QPushButton:hover {
+                background-color: #bbdefb;
+            }
+        """)
+        folder_control_layout.addWidget(self.manage_excluded_btn)
 
         # Кнопка удаления последней папки
         self.remove_last_btn = QPushButton("↶ Удалить последнюю папку")
@@ -845,6 +863,63 @@ class MainWindow(QMainWindow):
 
         return True
 
+    def manage_excluded_folders(self):
+        """Открывает диалог управления чёрным списком"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Управление чёрным списком")
+        dialog.setGeometry(200, 200, 500, 400)
+
+        layout = QVBoxLayout(dialog)
+
+        # Заголовок
+        title = QLabel(f"Чёрный список папок ({len(self.excluded_folders)}):")
+        title.setStyleSheet("font-weight: bold; font-size: 11pt; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        # Список папок с прокруткой
+        scroll_area = QScrollArea()
+        list_widget = QListWidget()
+
+        for folder in self.excluded_folders:
+            item = QListWidgetItem(folder)
+            item.setToolTip(folder)
+            list_widget.addItem(item)
+
+        scroll_area.setWidget(list_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+
+        # Кнопки управления
+        button_layout = QHBoxLayout()
+
+        remove_btn = QPushButton("🗑️ Удалить выбранное")
+        remove_btn.clicked.connect(lambda: self.remove_excluded_folder(list_widget, dialog))
+        remove_btn.setEnabled(False)
+
+        clear_btn = QPushButton("🗑️ Очистить всё")
+        clear_btn.clicked.connect(lambda: self.clear_excluded_folders(dialog))
+        clear_btn.setEnabled(bool(self.excluded_folders))
+
+        # add_btn = QPushButton("➕ Добавить папку")
+        # add_btn.clicked.connect(lambda: self.add_to_excluded_from_dialog(dialog))
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dialog.accept)
+
+        button_layout.addWidget(remove_btn)
+        button_layout.addWidget(clear_btn)
+        #button_layout.addWidget(add_btn)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+        # Обновляем состояние кнопки удаления при выборе
+        list_widget.itemSelectionChanged.connect(
+            lambda: remove_btn.setEnabled(bool(list_widget.selectedItems()))
+        )
+
+        dialog.exec()
+
     def remove_last_folder(self):
         """Удаляет последнюю добавленную папку"""
         try:
@@ -953,6 +1028,63 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"ERROR loading excluded folders: {e}")
             self.excluded_folders = []
+
+    def remove_excluded_folder(self, list_widget, dialog):
+        """Удаляет выбранную папку из чёрного списка"""
+        selected = list_widget.selectedItems()
+        if not selected:
+            return
+
+        folder_to_remove = selected[0].text()
+
+        reply = QMessageBox.question(
+            dialog,
+            "Удаление из чёрного списка",
+            f"Удалить папку из чёрного списка?\n\n{folder_to_remove}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if folder_to_remove in self.excluded_folders:
+                self.excluded_folders.remove(folder_to_remove)
+                self.save_excluded_folders()
+
+                # Обновляем список
+                list_widget.takeItem(list_widget.row(selected[0]))
+
+                self.log_text.append(f"📋 Удалена из чёрного списка: {os.path.basename(folder_to_remove)}")
+
+    def clear_excluded_folders(self, dialog):
+        """Очищает весь чёрный список"""
+        if not self.excluded_folders:
+            return
+
+        reply = QMessageBox.question(
+            dialog,
+            "Очистка чёрного списка",
+            f"Очистить весь чёрный список ({len(self.excluded_folders)} папок)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.excluded_folders.clear()
+            self.save_excluded_folders()
+            dialog.accept()
+            self.log_text.append("📋 Чёрный список полностью очищен")
+
+    # def add_to_excluded_from_dialog(self, dialog):
+    #     """Добавляет папку в чёрный список из диалога управления"""
+    #     folder = QFileDialog.getExistingDirectory(
+    #         dialog,
+    #         "Выберите папку для добавления в чёрный список"
+    #     )
+    #
+    #     if folder and folder not in self.excluded_folders:
+    #         self.excluded_folders.append(folder)
+    #         self.save_excluded_folders()
+    #         dialog.accept()  # Закрываем и переоткрываем чтобы обновить список
+    #         self.manage_excluded_folders()
+    #         self.log_text.append(f"📋 Добавлена в чёрный список: {os.path.basename(folder)}")
 
     def show_license(self):
         """Показывает окно с текстом лицензии"""
