@@ -263,6 +263,12 @@ class MainWindow(QMainWindow):
         self.comparator = create_algorithm('simple')
         self.current_algorithm_name = 'simple'
 
+        self.pairs_widget = QWidget()
+        self.pairs_layout = QVBoxLayout(self.pairs_widget)
+
+        # Создаем интерфейс
+        self.setup_ui()
+
         # Переменные состояния
         self.selected_folders = []  # ← список папок
 
@@ -281,10 +287,9 @@ class MainWindow(QMainWindow):
 
         # Атрибуты для управления кнопками пар
         self.pairs_container = None
-        self.pairs_layout = None
+        #self.pairs_layout = None
 
-        # Создаем интерфейс
-        self.setup_ui()
+
 
     def safe_log(self, message):
         """Безопасное логирование с защитой от рекурсии"""
@@ -1188,10 +1193,7 @@ class MainWindow(QMainWindow):
         else:
             self.log_text.append("📊 Нет пар для анализа схожести")
 
-        # Лог для отладки
-        print(f"DEBUG: Total pairs: {len(results)}, Filtered: {len(filtered_results)}")
-        if filtered_results:
-            print(f"DEBUG: Similarities in filtered: {[sim for _, _, sim, _ in filtered_results[:5]]}")
+
 
         # Показываем СВОДКУ пар в логе (не все детали)
         # high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
