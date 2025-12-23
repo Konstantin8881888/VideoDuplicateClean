@@ -107,7 +107,7 @@ class OptimizedScanThread(QThread):
             # Отправляем результаты в основной поток
             self.result_signal.emit(similar_pairs)
 
-            self.progress_signal.emit(100, f"Найдено {len(similar_pairs)} пар похожих видео")
+            self.progress_signal.emit(100, "Передаю результаты для фильтрации")
 
         except Exception as e:
             print(f"Ошибка в потоке сканирования: {e}")
@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VideoDuplicate Cleaner")
-        self.setGeometry(100, 100, 1100, 800)  # Увеличили высоту окна
+        self.setGeometry(30, 50, 1100, 800)  # Увеличили высоту окна
 
         icon_path = resource_path("static/logo.ico")
         self.setWindowIcon(QIcon(icon_path))
@@ -263,8 +263,20 @@ class MainWindow(QMainWindow):
         self.comparator = create_algorithm('simple')
         self.current_algorithm_name = 'simple'
 
+        self.pairs_widget = QWidget()
+        self.pairs_layout = QVBoxLayout(self.pairs_widget)
+
+        # Создаем интерфейс
+        self.setup_ui()
+
         # Переменные состояния
         self.selected_folders = []  # ← список папок
+
+        # Чёрный список папок (не сканировать)
+        self.excluded_folders = []
+        self.excluded_folders_file = "excluded_folders.json"
+        self.load_excluded_folders()  # ← загружаем при старте
+
         self.video1_path = ""
         self.video2_path = ""
         self.current_pairs = []
@@ -275,10 +287,9 @@ class MainWindow(QMainWindow):
 
         # Атрибуты для управления кнопками пар
         self.pairs_container = None
-        self.pairs_layout = None
+        #self.pairs_layout = None
 
-        # Создаем интерфейс
-        self.setup_ui()
+
 
     def safe_log(self, message):
         """Безопасное логирование с защитой от рекурсии"""
@@ -380,6 +391,24 @@ class MainWindow(QMainWindow):
 
         # Пустое пространство слева
         folder_control_layout.addStretch()
+
+        # Кнопка запрета сканирования папки
+        self.exclude_folder_btn = QPushButton("🚫 Включить папку в чёрный список")
+        self.exclude_folder_btn.clicked.connect(self.exclude_folder)
+        self.exclude_folder_btn.setToolTip("Добавить папку в чёрный список (не сканировать)")
+        self.exclude_folder_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffecb3;
+                border: 1px solid #ffd54f;
+                padding: 5px 10px;
+                font-size: 9pt;
+                margin-right: 5px;
+            }
+            QPushButton:hover {
+                background-color: #ffd54f;
+            }
+        """)
+        folder_control_layout.addWidget(self.exclude_folder_btn)
 
         # Кнопка удаления последней папки
         self.remove_last_btn = QPushButton("↶ Удалить последнюю папку")
@@ -849,6 +878,82 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
+    def exclude_folder(self):
+        """Добавляет папку в чёрный список (не сканировать)"""
+        try:
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                "Выберите папку для добавления в чёрный список\n(файлы в ней не будут сканироваться)"
+            )
+
+            if not folder:
+                return
+
+            folder = os.path.normpath(folder)
+
+            # Проверяем не добавлена ли уже
+            if folder in self.excluded_folders:
+                QMessageBox.information(
+                    self,
+                    "Папка уже в чёрном списке",
+                    f"Папка уже находится в чёрном списке:\n{folder}"
+                )
+                return
+
+            # Показываем объяснение
+            explanation = QMessageBox(self)
+            explanation.setWindowTitle("Добавление в чёрный список")
+            explanation.setText(f"Добавить папку в чёрный список?\n\n{folder}")
+            explanation.setInformativeText(
+                "Файлы в этой папке и всех её подпапках НЕ будут сканироваться.\n"
+                "Это полезно при высокой сложности дерева папок.\n"
+                "Чёрный список сохраняется между запусками программы."
+            )
+            explanation.setStandardButtons(
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No
+            )
+            explanation.setDefaultButton(QMessageBox.StandardButton.No)
+
+            if explanation.exec() == QMessageBox.StandardButton.Yes:
+                self.excluded_folders.append(folder)
+                self.save_excluded_folders()
+
+                self.log_text.append(f"🚫 Папка добавлена в чёрный список: {os.path.basename(folder)}")
+                self.log_text.append(f"   Полный путь: {folder}")
+
+                QMessageBox.information(
+                    self,
+                    "Папка добавлена",
+                    f"Папка добавлена в чёрный список.\n\n"
+                    f"Теперь при сканировании будут пропускаться все файлы в:\n{folder}"
+                )
+
+        except Exception as e:
+            print(f"ERROR in exclude_folder: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def save_excluded_folders(self):
+        """Сохраняет чёрный список папок в файл"""
+        try:
+            with open(self.excluded_folders_file, 'w', encoding='utf-8') as f:
+                json.dump(self.excluded_folders, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"ERROR saving excluded folders: {e}")
+
+    def load_excluded_folders(self):
+        """Загружает чёрный список папок из файла"""
+        try:
+            if os.path.exists(self.excluded_folders_file):
+                with open(self.excluded_folders_file, 'r', encoding='utf-8') as f:
+                    self.excluded_folders = json.load(f)
+                    if self.excluded_folders:
+                        self.log_text.append(f"📋 Загружен чёрный список: {len(self.excluded_folders)} папок")
+        except Exception as e:
+            print(f"ERROR loading excluded folders: {e}")
+            self.excluded_folders = []
+
     def show_license(self):
         """Показывает окно с текстом лицензии"""
 
@@ -1058,40 +1163,83 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Похожие видео не найдены")
             return
 
+        # ФИЛЬТРУЕМ результаты через чёрный список
+        filtered_results = self.filter_excluded_pairs(results)
+
         self.log_text.append(f"📊 Найдено пар похожих видео: {len(results)}")
-        self.status_label.setText(f"Найдено {len(results)} пар похожих видео")
+        self.log_text.append(f"📊 После фильтрации чёрного списка осталось: {len(filtered_results)}")
 
-        # Сохраняем все пары для последующего использования
-        self.current_pairs = results
+        # Сохраняем пары для последующего использования
+        if len(results) != len(filtered_results):
+            self.log_text.append(f"🚫 Исключено пар: {len(results) - len(filtered_results)}")
 
-        # Показываем СВОДКУ пар в логе (не все детали)
-        high_similarity = sum(1 for _, _, sim, _ in results if sim > 0.8)
-        medium_similarity = sum(1 for _, _, sim, _ in results if 0.6 <= sim <= 0.8)
-        low_similarity = sum(1 for _, _, sim, _ in results if sim < 0.6)
+        self.status_label.setText(f"Найдено {len(filtered_results)} пары похожих видео")
 
-        self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
-        self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
-        self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
+        # Сохраняем отфильтрованные пары
+        self.current_pairs = filtered_results
 
-        # Создаем кнопки для сравнения КАЖДОЙ пары
-        self.create_pair_buttons(results)
+        # Создаем кнопки для ОТФИЛЬТРОВАННЫХ пар
+        self.create_pair_buttons(filtered_results)  # ← передаём отфильтрованные!
+
+        # ВАЖНО: Статистику считаем по ОТФИЛЬТРОВАННЫМ парам!
+        if filtered_results:
+            high_similarity = sum(1 for _, _, sim, _ in filtered_results if sim > 0.8)
+            medium_similarity = sum(1 for _, _, sim, _ in filtered_results if 0.6 <= sim <= 0.8)
+            low_similarity = sum(1 for _, _, sim, _ in filtered_results if sim < 0.6)
+
+            self.log_text.append(f"🎯 Высокая схожесть (>80%): {high_similarity} пар")
+            self.log_text.append(f"📗 Средняя схожесть (60-80%): {medium_similarity} пар")
+            self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
+        else:
+            self.log_text.append("📊 Нет пар для анализа схожести")
+
+
+
+    def filter_excluded_pairs(self, pairs):
+        """Фильтрует пары, исключая те, где файлы в чёрном списке"""
+        if not hasattr(self, 'excluded_folders') or not self.excluded_folders:
+            return pairs
+
+        filtered_pairs = []
+        excluded_count = 0
+
+        for pair in pairs:
+            # pair обычно имеет вид: (video1, video2, similarity, result_dict)
+            video1 = pair[0] if isinstance(pair, (list, tuple)) else pair.get('file1', '')
+            video2 = pair[1] if isinstance(pair, (list, tuple)) else pair.get('file2', '')
+
+            # Проверяем оба файла
+            file1_excluded = self.is_file_excluded(video1)
+            file2_excluded = self.is_file_excluded(video2)
+
+            if not file1_excluded and not file2_excluded:
+                filtered_pairs.append(pair)
+            else:
+                excluded_count += 1
+
+
+        if excluded_count > 0:
+            self.log_text.append(f"📊 Исключено пар из чёрного списка: {excluded_count}")
+
+        return filtered_pairs
+
+    def is_file_excluded(self, file_path):
+        """Проверяет находится ли файл в исключённой папке"""
+        if not hasattr(self, 'excluded_folders') or not self.excluded_folders:
+            return False
+
+        file_path = os.path.normpath(file_path)
+
+        for excluded_folder in self.excluded_folders:
+            excluded_folder = os.path.normpath(excluded_folder)
+            if file_path.startswith(excluded_folder + os.sep):
+                return True
+
+        return False
 
     def create_pair_buttons(self, pairs: list):
         """Создает виджеты для пар с защитой от переполнения"""
         try:
-            # # ----- ДЕДУПЛИКАЦИЯ ПАР ПЕРЕД ОТОБРАЖЕНИЕМ -----
-            # seen = set()
-            # unique_pairs = []
-            # for video1, video2, similarity, details in pairs:
-            #     # Нормализуем порядок файлов в паре
-            #     key = tuple(sorted([video1, video2]))
-            #     if key not in seen:
-            #         seen.add(key)
-            #         unique_pairs.append((video1, video2, similarity, details))
-            #
-            # pairs = unique_pairs
-            # print(f"DEBUG: после дедупликации осталось {len(pairs)} уникальных пар")
-            # -------------------------------------------------
 
             print(f"DEBUG: create_pair_buttons начат, пар: {len(pairs)}")
 
