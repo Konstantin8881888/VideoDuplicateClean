@@ -393,9 +393,9 @@ class MainWindow(QMainWindow):
         folder_control_layout.addStretch()
 
         # Кнопка запрета сканирования папки
-        self.exclude_folder_btn = QPushButton("🚫 Включить папку в чёрный список")
+        self.exclude_folder_btn = QPushButton("🚫 Включить папку в игнор-лист")
         self.exclude_folder_btn.clicked.connect(self.exclude_folder)
-        self.exclude_folder_btn.setToolTip("Добавить папку в чёрный список (не сканировать)")
+        self.exclude_folder_btn.setToolTip("Добавить папку в игнор-лист (не сканировать)")
         self.exclude_folder_btn.setStyleSheet("""
             QPushButton {
                 background-color: #ffecb3;
@@ -448,7 +448,7 @@ class MainWindow(QMainWindow):
         folder_control_layout.addWidget(self.remove_last_btn)
 
         # Кнопка очистки всех папок
-        self.clear_folders_btn = QPushButton("🗑️ Очистить список")
+        self.clear_folders_btn = QPushButton("🗑️ Очистить список для сканирования")
         self.clear_folders_btn.clicked.connect(self.clear_folders)
         self.clear_folders_btn.setToolTip("Очистить весь список выбранных папок")
         self.clear_folders_btn.setStyleSheet("""
@@ -872,7 +872,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
 
         # Заголовок
-        title = QLabel(f"Чёрный список папок ({len(self.excluded_folders)}):")
+        title = QLabel(f"Игнор-лист папок:")
         title.setStyleSheet("font-weight: bold; font-size: 11pt; margin-bottom: 10px;")
         layout.addWidget(title)
 
@@ -955,7 +955,9 @@ class MainWindow(QMainWindow):
         try:
             folder = QFileDialog.getExistingDirectory(
                 self,
-                "Выберите папку для добавления в чёрный список\n(файлы в ней не будут сканироваться)"
+                "Выберите папку для добавления в игнор-лист"
+                ""
+                "\n(файлы в ней не будут сканироваться)"
             )
 
             if not folder:
@@ -974,12 +976,12 @@ class MainWindow(QMainWindow):
 
             # Показываем объяснение
             explanation = QMessageBox(self)
-            explanation.setWindowTitle("Добавление в чёрный список")
-            explanation.setText(f"Добавить папку в чёрный список?\n\n{folder}")
+            explanation.setWindowTitle("Добавление в игнор-лист")
+            explanation.setText(f"Добавить папку в игнор-лист?\n\n{folder}")
             explanation.setInformativeText(
                 "Файлы в этой папке и всех её подпапках НЕ будут сканироваться.\n"
                 "Это полезно при высокой сложности дерева папок.\n"
-                "Чёрный список сохраняется между запусками программы."
+                "Игнор-лист сохраняется между запусками программы."
             )
             explanation.setStandardButtons(
                 QMessageBox.StandardButton.Yes |
@@ -991,13 +993,13 @@ class MainWindow(QMainWindow):
                 self.excluded_folders.append(folder)
                 self.save_excluded_folders()
 
-                self.log_text.append(f"🚫 Папка добавлена в чёрный список: {os.path.basename(folder)}")
+                self.log_text.append(f"🚫 Папка добавлена в игнор-лист: {os.path.basename(folder)}")
                 self.log_text.append(f"   Полный путь: {folder}")
 
                 QMessageBox.information(
                     self,
                     "Папка добавлена",
-                    f"Папка добавлена в чёрный список.\n\n"
+                    f"Папка добавлена в игнор-лист.\n\n"
                     f"Теперь при сканировании будут пропускаться все файлы в:\n{folder}"
                 )
 
@@ -1021,7 +1023,7 @@ class MainWindow(QMainWindow):
                 with open(self.excluded_folders_file, 'r', encoding='utf-8') as f:
                     self.excluded_folders = json.load(f)
                     if self.excluded_folders:
-                        self.log_text.append(f"📋 Загружен чёрный список: {len(self.excluded_folders)} папок")
+                        self.log_text.append(f"📋 Загружен игнор-лист: {len(self.excluded_folders)} папок")
         except Exception as e:
             print(f"ERROR loading excluded folders: {e}")
             self.excluded_folders = []
@@ -1036,8 +1038,8 @@ class MainWindow(QMainWindow):
 
         reply = QMessageBox.question(
             dialog,
-            "Удаление из чёрного списка",
-            f"Удалить папку из чёрного списка?\n\n{folder_to_remove}",
+            "Удаление из игнор-листа",
+            f"Удалить папку из игнор-листа?\n\n{folder_to_remove}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -1059,7 +1061,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             dialog,
             "Очистка чёрного списка",
-            f"Очистить весь чёрный список ({len(self.excluded_folders)} папок)?",
+            f"Очистить весь игнор-лист ({len(self.excluded_folders)} папок)?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -1067,7 +1069,7 @@ class MainWindow(QMainWindow):
             self.excluded_folders.clear()
             self.save_excluded_folders()
             dialog.accept()
-            self.log_text.append("📋 Чёрный список полностью очищен")
+            self.log_text.append("📋 Игнор-лист полностью очищен")
 
 
     def show_license(self):
@@ -1283,13 +1285,13 @@ class MainWindow(QMainWindow):
         filtered_results = self.filter_excluded_pairs(results)
 
         self.log_text.append(f"📊 Найдено пар похожих видео: {len(results)}")
-        self.log_text.append(f"📊 После фильтрации чёрного списка осталось: {len(filtered_results)}")
+        self.log_text.append(f"📊 После фильтрации игнор-листа осталось: {len(filtered_results)}")
 
         # Сохраняем пары для последующего использования
         if len(results) != len(filtered_results):
             self.log_text.append(f"🚫 Исключено пар: {len(results) - len(filtered_results)}")
 
-        self.status_label.setText(f"Найдено {len(filtered_results)} пары похожих видео")
+        self.status_label.setText(f"Найдено пар похожих видео: {len(filtered_results)}")
 
         # Сохраняем отфильтрованные пары
         self.current_pairs = filtered_results
@@ -1308,8 +1310,6 @@ class MainWindow(QMainWindow):
             self.log_text.append(f"📉 Низкая схожесть (<60%): {low_similarity} пар")
         else:
             self.log_text.append("📊 Нет пар для анализа схожести")
-
-
 
     def filter_excluded_pairs(self, pairs):
         """Фильтрует пары, исключая те, где файлы в чёрном списке"""
@@ -1332,7 +1332,6 @@ class MainWindow(QMainWindow):
                 filtered_pairs.append(pair)
             else:
                 excluded_count += 1
-
 
         if excluded_count > 0:
             self.log_text.append(f"📊 Исключено пар из чёрного списка: {excluded_count}")
